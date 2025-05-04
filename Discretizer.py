@@ -4,7 +4,7 @@ All credit too open-ai's examples: https://github.com/openai/retro/blob/master/r
 """
 
 # gym, numpy, retro
-import gym
+import gymnasium as gym
 import numpy as np
 import retro
 

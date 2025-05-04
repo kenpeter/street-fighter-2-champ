@@ -177,7 +177,9 @@ class DeepQAgent(Agent):
         model.add(Dense(96, activation="relu"))
         model.add(Dense(48, activation="relu"))
         model.add(Dense(self.actionSize, activation="linear"))
-        model.compile(loss=DeepQAgent._huber_loss, optimizer=Adam(lr=self.learningRate))
+        model.compile(
+            loss=DeepQAgent._huber_loss, optimizer=Adam(learning_rate=self.learningRate)
+        )
 
         # model = Sequential()
         # model.add(Dense(256, input_dim= self.stateSize, activation='relu'))
@@ -186,7 +188,7 @@ class DeepQAgent(Agent):
         # model.add(Dense(256, activation='relu'))
         # model.add(Dense(256, activation='relu'))
         # model.add(Dense(self.actionSize, activation='linear'))
-        # model.compile(loss=DeepQAgent._huber_loss, optimizer=Adam(lr=self.learningRate))
+        # model.compile(loss=DeepQAgent._huber_loss, optimizer=Adam(learning_rate=self.learningRate))
 
         # model = Sequential()
         # model.add(Dense(4096, input_dim= self.stateSize, activation='relu'))
@@ -199,7 +201,7 @@ class DeepQAgent(Agent):
         # model.add(Dense(256, activation='relu'))
         # model.add(Dense(128, activation='relu'))
         # model.add(Dense(self.actionSize, activation='linear'))
-        # model.compile(loss=DeepQAgent._huber_loss, optimizer=Adam(lr=self.learningRate))
+        # model.compile(loss=DeepQAgent._huber_loss, optimizer=Adam(learning_rate=self.learningRate))
 
         print("Successfully initialized model")
         return model
@@ -316,7 +318,8 @@ class DeepQAgent(Agent):
         return model
 
 
-from keras.utils.generic_utils import get_custom_objects
+from keras.utils import get_custom_objects
+
 
 loss = DeepQAgent._huber_loss
 get_custom_objects().update({"_huber_loss": loss})
