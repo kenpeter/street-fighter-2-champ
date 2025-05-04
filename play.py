@@ -17,11 +17,25 @@ WINDOW_HEIGHT = ORIGINAL_HEIGHT * SCALE_FACTOR
 screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
 pygame.display.set_caption("Street Fighter II")
 
-# Create the Retro environment with appropriate parameters
+# List available states
+game_name = "StreetFighterIISpecialChampionEdition-Genesis"
+available_states = retro.data.list_states(game_name)
+print(f"Available states for {game_name}:")
+for state in available_states:
+    print(f"- {state}")
+
+# Use a specific state
+# Common states are often named like 'CharacterSelect', 'Level1', etc.
+# If none of the available states give you the character select,
+# use the default state (just pass None or empty string)
+selected_state = None  # Try using None first, this often starts at the title screen
+
+# Create the Retro environment
 env = retro.make(
-    game="StreetFighterIISpecialChampionEdition-Genesis",
-    use_restricted_actions=retro.Actions.ALL,  # Important for all buttons to work
-    render_mode="rgb_array",  # Explicitly set render mode to avoid OpenGL issues
+    game=game_name,
+    state=selected_state,  # Use the selected state or default
+    use_restricted_actions=retro.Actions.ALL,
+    render_mode="rgb_array",
 )
 
 # Print the actual button mapping for verification
@@ -62,7 +76,7 @@ for key, button_idx in KEY_MAP.items():
 # Reset the environment
 obs = env.reset()
 
-# Track previous key states to detect key presses (without using .copy())
+# Track previous key states to detect key presses
 previous_keys = {}
 for key in KEY_MAP.keys():
     previous_keys[key] = False
@@ -77,11 +91,18 @@ print("- Z: A (light punch)")
 print("- X: B (light kick)")
 print("- A: X (medium kick)")
 print("- S: Y (heavy punch)")
-print("- Enter: Start")
-print("- Space: Select")
+print("- Enter: START (press this to start the game from title screen)")
+print("- C: C button")
+print("- D: Z button")
+print("- Tab: MODE button")
 print("- ESC: Quit game")
 
+# Frame counter for debug
+frame_counter = 0
+
 while running:
+    frame_counter += 1
+
     # Handle events
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
@@ -121,29 +142,27 @@ while running:
         print(f"Error in env.step: {e}")
         break
 
-    # Render the game using rgb_array mode
+    # Render the game
     try:
         frame = env.render()
 
-        # Convert to Pygame surface and handle potential dimension issues
-        try:
-            frame_surface = pygame.surfarray.make_surface(frame.swapaxes(0, 1))
+        # Convert to Pygame surface
+        frame_surface = pygame.surfarray.make_surface(frame.swapaxes(0, 1))
 
-            # Scale and display
-            scaled_surface = pygame.transform.scale(
-                frame_surface, (WINDOW_WIDTH, WINDOW_HEIGHT)
-            )
-            screen.blit(scaled_surface, (0, 0))
-            pygame.display.flip()
-        except Exception as e:
-            print(f"Error in rendering: {e}")
-            # If there's an error with dimensions, print the shape
-            print(f"Frame shape: {frame.shape}")
-            break
-
+        # Scale and display
+        scaled_surface = pygame.transform.scale(
+            frame_surface, (WINDOW_WIDTH, WINDOW_HEIGHT)
+        )
+        screen.blit(scaled_surface, (0, 0))
+        pygame.display.flip()
     except Exception as e:
-        print(f"Error in env.render: {e}")
+        print(f"Error in rendering: {e}")
+        print(f"Frame shape: {frame.shape if 'frame' in locals() else 'unknown'}")
         break
+
+    # Print game info occasionally
+    if frame_counter % 300 == 0:  # Every ~5 seconds at 60fps
+        print(f"Game info: {info}")
 
     # Cap the framerate
     clock.tick(60)
