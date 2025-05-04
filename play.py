@@ -3,6 +3,10 @@ import pygame
 import numpy as np
 import sys
 import time
+import os
+
+# Constants
+STATE_SAVE_DIR = "saved_states"  # Directory to save states
 
 # Initialize Pygame
 pygame.init()
@@ -12,6 +16,9 @@ SCALE_FACTOR = 2  # Adjust for larger UI
 ORIGINAL_WIDTH, ORIGINAL_HEIGHT = 320, 224  # Genesis resolution
 WINDOW_WIDTH = ORIGINAL_WIDTH * SCALE_FACTOR
 WINDOW_HEIGHT = ORIGINAL_HEIGHT * SCALE_FACTOR
+
+# Create directories if they don't exist
+os.makedirs(STATE_SAVE_DIR, exist_ok=True)
 
 # Create Pygame window
 screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
@@ -25,18 +32,19 @@ for state in available_states:
     print(f"- {state}")
 
 # Use a specific state
-# Common states are often named like 'CharacterSelect', 'Level1', etc.
-# If none of the available states give you the character select,
-# use the default state (just pass None or empty string)
-selected_state = None  # Try using None first, this often starts at the title screen
+# Use None for title screen or specify a state if you want to start at a specific point
+selected_state = None
 
 # Create the Retro environment
 env = retro.make(
     game=game_name,
-    state=selected_state,  # Use the selected state or default
+    state=selected_state,
     use_restricted_actions=retro.Actions.ALL,
     render_mode="rgb_array",
 )
+
+# Define the path for saving states
+game_state_path = os.path.join(STATE_SAVE_DIR, f"{game_name}_custom.state")
 
 # Print the actual button mapping for verification
 print("Button order in environment:")
@@ -81,6 +89,10 @@ previous_keys = {}
 for key in KEY_MAP.keys():
     previous_keys[key] = False
 
+# Also track O and P keys for save/load state
+previous_keys[pygame.K_o] = False
+previous_keys[pygame.K_p] = False
+
 # Main game loop
 clock = pygame.time.Clock()
 running = True
@@ -95,6 +107,8 @@ print("- Enter: START (press this to start the game from title screen)")
 print("- C: C button")
 print("- D: Z button")
 print("- Tab: MODE button")
+print("- O: Save current game state")
+print("- P: Load previously saved game state")
 print("- ESC: Quit game")
 
 # Frame counter for debug
@@ -127,6 +141,41 @@ while running:
         if current_keys[key] and not previous_keys[key]:
             print(f"Pressed: {pygame.key.name(key)} -> {env.buttons[button_idx]}")
         previous_keys[key] = current_keys[key]
+
+    # Handle save state (O key)
+    if current_keys[pygame.K_o] and not previous_keys[pygame.K_o]:
+        try:
+            # Get the current state
+            save_state = env.em.get_state()
+
+            # Save it to file
+            with open(game_state_path, "wb") as f:
+                f.write(save_state)
+
+            print(f"Game state saved to {game_state_path}")
+        except Exception as e:
+            print(f"Error saving state: {e}")
+
+    # Handle load state (P key)
+    if current_keys[pygame.K_p] and not previous_keys[pygame.K_p]:
+        if os.path.exists(game_state_path):
+            try:
+                # Read the state from file
+                with open(game_state_path, "rb") as f:
+                    save_state = f.read()
+
+                # Load it into the emulator
+                env.em.set_state(save_state)
+
+                print(f"Game state loaded from {game_state_path}")
+            except Exception as e:
+                print(f"Error loading state: {e}")
+        else:
+            print(f"No saved state found at {game_state_path}")
+
+    # Update O and P key states
+    previous_keys[pygame.K_o] = current_keys[pygame.K_o]
+    previous_keys[pygame.K_p] = current_keys[pygame.K_p]
 
     # Step the environment
     try:

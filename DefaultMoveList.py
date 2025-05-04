@@ -2,6 +2,7 @@ from enum import Enum
 import random
 
 
+# many moves + special moves
 class Moves(Enum):
     """Enum of the set of possible moves the agent is allowed to perform"""
 
@@ -89,7 +90,7 @@ MovesDict = {
     Moves.RightShoulderThrow: [36],
     Moves.LeftSomersaultThrow: [19],
     Moves.RightSomersaultThrow: [20],
-    # Special Moves
+    # Special Moves, 2 direction
     Moves.Fireball: [[2, 8, 30], [2, 5, 28]],
     Moves.HurricaneKick: [[2, 5, 19], [2, 8, 20]],
     Moves.DragonUppercut: [[6, 2, 37], [3, 2, 35]],
