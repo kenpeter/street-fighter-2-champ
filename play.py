@@ -25,16 +25,9 @@ os.makedirs(STATE_SAVE_DIR, exist_ok=True)
 
 # Create Pygame window
 screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-pygame.display.set_caption("Street Fighter II - State Creator")
+pygame.display.set_caption("Street Fighter II - Direct Health Lock")
 
-# List available states
-available_states = retro.data.list_states(GAME_NAME)
-print(f"Available states for {GAME_NAME}:")
-for state in available_states:
-    print(f"- {state}")
-
-# Use a specific state
-# Use None for title screen or specify a state if you want to start at a specific point
+# Use a specific state or None for title screen
 selected_state = None
 
 # Create the Retro environment
@@ -44,10 +37,6 @@ env = retro.make(
     use_restricted_actions=retro.Actions.ALL,
     render_mode="rgb_array",
 )
-
-# Print the actual button mapping for verification
-print("Button order in environment:")
-print(env.buttons)
 
 # Define key mappings based on actual button order
 KEY_MAP = {
@@ -73,13 +62,6 @@ KEY_MAP = {
 # Clean up None values from the KEY_MAP
 KEY_MAP = {k: v for k, v in KEY_MAP.items() if v is not None}
 
-# Print the key mappings for reference
-print("\nKey mappings:")
-for key, button_idx in KEY_MAP.items():
-    key_name = pygame.key.name(key)
-    button_name = env.buttons[button_idx]
-    print(f"{key_name} -> {button_name} (index {button_idx})")
-
 # Reset the environment
 obs = env.reset()
 
@@ -88,44 +70,69 @@ previous_keys = {}
 for key in KEY_MAP.keys():
     previous_keys[key] = False
 
-# Keys for save state functionality
+# Additional function keys
+previous_keys[pygame.K_h] = False  # Toggle health lock
 previous_keys[pygame.K_o] = False  # Save state
 previous_keys[pygame.K_p] = False  # Load state
-previous_keys[pygame.K_1] = False  # Save as "ken.state"
-previous_keys[pygame.K_2] = False  # Save as "ryu.state"
-previous_keys[pygame.K_3] = False  # Save as "blanka.state"
-previous_keys[pygame.K_4] = False  # Save as "chunli.state"
+
+# For state saving
+character_keys = {
+    pygame.K_1: "ken.state",
+    pygame.K_2: "ryu.state",
+    pygame.K_3: "blanka.state",
+    pygame.K_4: "chunli.state",
+    pygame.K_5: "ehonda.state",
+    pygame.K_6: "guile.state",
+    pygame.K_7: "dhalsim.state",
+    pygame.K_8: "zangief.state",
+    pygame.K_9: "balrog.state",
+    pygame.K_0: "vega.state",
+    pygame.K_MINUS: "sagat.state",
+    pygame.K_EQUALS: "bison.state",
+}
+
+# Initialize key states for all character keys
+for key in character_keys.keys():
+    previous_keys[key] = False
+
+# Health lock variables
+health_lock_enabled = False
+MAX_HEALTH = 176  # Maximum health value in SF2
+
+# Print instructions
+print("\nDirect Health Lock Controls:")
+print("- Arrow keys/ZXAS: Regular game controls")
+print("- Enter: START button")
+print("- H: Toggle health lock (sets health directly using the game API)")
+print("- O: Save state")
+print("- P: Load state")
+print("- 1-9,0,-,=: Save character states")
+print("- ESC: Quit")
+print("\nHow to use:")
+print("1. Start the game and begin a match")
+print("2. Press H to enable health lock (keeps your health at maximum)")
+print("3. Play through the game to reach harder opponents")
+print("4. Save the state when you find a challenging opponent")
+print("\nThis version uses the game's built-in health tracking instead of")
+print("trying to find memory addresses. It should work more reliably.")
+
+# Temporary state path
+temp_state_path = os.path.join(STATE_SAVE_DIR, "temp.state")
+
+# Frame counter
+frame_counter = 0
 
 # Main game loop
 clock = pygame.time.Clock()
 running = True
 
-print("\nControls:")
-print("- Arrow keys: Movement")
-print("- Z: A (light punch)")
-print("- X: B (light kick)")
-print("- A: X (medium kick)")
-print("- S: Y (heavy punch)")
-print("- Enter: START (press this to start the game from title screen)")
-print("- C: C button")
-print("- D: Z button")
-print("- Tab: MODE button")
-print("- O: Save temporary state")
-print("- P: Load temporary state")
-print("- 1: Save as 'ken.state' (compatible with Lobby.py)")
-print("- 2: Save as 'ryu.state' (compatible with Lobby.py)")
-print("- 3: Save as 'blanka.state' (compatible with Lobby.py)")
-print("- 4: Save as 'chunli.state' (compatible with Lobby.py)")
-print("- ESC: Quit game")
-
-# Temporary state path
-temp_state_path = os.path.join(STATE_SAVE_DIR, "temp.state")
-
-# Frame counter for debug
-frame_counter = 0
+last_time = time.time()
 
 while running:
     frame_counter += 1
+    current_time = time.time()
+    delta_time = current_time - last_time
+    last_time = current_time
 
     # Handle events
     for event in pygame.event.get():
@@ -138,7 +145,7 @@ while running:
     # Get current key states
     current_keys = pygame.key.get_pressed()
 
-    # Create action array matching the exact size of env.buttons
+    # Create action array
     action = [False] * len(env.buttons)
 
     # Set actions based on key mappings
@@ -146,16 +153,9 @@ while running:
         if current_keys[key]:
             action[button_idx] = True
 
-    # Debug key presses - using our manual previous_keys dictionary
-    for key, button_idx in KEY_MAP.items():
-        if current_keys[key] and not previous_keys[key]:
-            print(f"Pressed: {pygame.key.name(key)} -> {env.buttons[button_idx]}")
-        previous_keys[key] = current_keys[key]
-
-    # Handle temporary save state (O key)
+    # Handle save and load state
     if current_keys[pygame.K_o] and not previous_keys[pygame.K_o]:
         try:
-            # Use the retro library's save_state method
             state_data = env.em.get_state()
             with open(temp_state_path, "wb") as f:
                 f.write(state_data)
@@ -163,7 +163,6 @@ while running:
         except Exception as e:
             print(f"Error saving state: {e}")
 
-    # Handle temporary load state (P key)
     if current_keys[pygame.K_p] and not previous_keys[pygame.K_p]:
         if os.path.exists(temp_state_path):
             try:
@@ -176,18 +175,10 @@ while running:
         else:
             print(f"No saved state found at {temp_state_path}")
 
-    # Save as specific character states (for Lobby.py compatibility)
-    character_keys = {
-        pygame.K_1: "ken.state",
-        pygame.K_2: "ryu.state",
-        pygame.K_3: "blanka.state",
-        pygame.K_4: "chunli.state",
-    }
-
+    # Handle character state saving
     for key, state_name in character_keys.items():
         if current_keys[key] and not previous_keys[key]:
             try:
-                # Save the current state in the format expected by Lobby.py
                 state_path = os.path.join(STATE_SAVE_DIR, state_name)
                 state_data = env.em.get_state()
                 with open(state_path, "wb") as f:
@@ -198,13 +189,17 @@ while running:
             finally:
                 previous_keys[key] = current_keys[key]
 
-    # Update O and P key states
-    previous_keys[pygame.K_o] = current_keys[pygame.K_o]
-    previous_keys[pygame.K_p] = current_keys[pygame.K_p]
+    # Toggle health lock
+    if current_keys[pygame.K_h] and not previous_keys[pygame.K_h]:
+        health_lock_enabled = not health_lock_enabled
+        print(f"Health lock {'enabled' if health_lock_enabled else 'disabled'}")
+
+    # Update previous keys
+    for key in previous_keys:
+        previous_keys[key] = current_keys[key]
 
     # Step the environment
     try:
-        # Handle different return patterns (older vs newer retro versions)
         step_result = env.step(action)
         if len(step_result) == 4:  # older pattern
             obs, reward, done, info = step_result
@@ -212,6 +207,46 @@ while running:
         else:  # newer pattern with 5 returns
             obs, reward, terminated, truncated, info = step_result
             done = terminated or truncated
+
+        # Apply health lock by directly setting player health in next step
+        if health_lock_enabled and "health" in info and info["health"] < MAX_HEALTH:
+            # We can't modify 'info' directly as it's read-only
+            # But we can use env.data.set_value to set it for the next frame
+            try:
+                # First method - try to directly set the value via environment data
+                env.data.set_value("health", MAX_HEALTH)
+                if frame_counter % 300 == 0:  # Log every 5 seconds
+                    print(f"Set health to {MAX_HEALTH} via data API")
+            except Exception as e:
+                if frame_counter % 300 == 0:  # Log every 5 seconds
+                    print(f"Error setting health: {e}")
+
+                # Second method - use the game's own health tracker to track where it gets health from
+                try:
+                    # Keep track of the game's own health data
+                    current_health = info.get("health", 0)
+                    if current_health < MAX_HEALTH and current_health >= 0:
+                        print(
+                            f"Health decreased to {current_health}, trying to restore..."
+                        )
+                        # Try alternative approaches that might work
+                        try:
+                            # Method 1: Set info data for next frame
+                            data = env.data
+                            if hasattr(data, "_Retro__info"):
+                                data._Retro__info["health"] = MAX_HEALTH
+                                print("Set health via __info")
+                        except:
+                            pass
+
+                        try:
+                            # Method 2: Use data.set_value again
+                            env.data.set_value("health", MAX_HEALTH)
+                            print("Set health via set_value")
+                        except:
+                            pass
+                except Exception as e:
+                    pass
     except Exception as e:
         print(f"Error in env.step: {e}")
         break
@@ -219,11 +254,7 @@ while running:
     # Render the game
     try:
         frame = env.render()
-
-        # Convert to Pygame surface
         frame_surface = pygame.surfarray.make_surface(frame.swapaxes(0, 1))
-
-        # Scale and display
         scaled_surface = pygame.transform.scale(
             frame_surface, (WINDOW_WIDTH, WINDOW_HEIGHT)
         )
@@ -231,12 +262,30 @@ while running:
         pygame.display.flip()
     except Exception as e:
         print(f"Error in rendering: {e}")
-        print(f"Frame shape: {frame.shape if 'frame' in locals() else 'unknown'}")
         break
 
     # Print game info occasionally
     if frame_counter % 300 == 0:  # Every ~5 seconds at 60fps
-        print(f"Game info: {info}")
+        if "info" in locals() and info:
+            print(f"Game info: {info}")
+
+            # If health lock is enabled, print status
+            if health_lock_enabled:
+                print(
+                    f"Health lock active: Current health = {info.get('health', 'unknown')}"
+                )
+
+                # If health is not max, try to set it directly again
+                if (
+                    "health" in info
+                    and info["health"] < MAX_HEALTH
+                    and info["health"] >= 0
+                ):
+                    try:
+                        env.data.set_value("health", MAX_HEALTH)
+                        print(f"Restored health to {MAX_HEALTH}")
+                    except Exception as e:
+                        print(f"Failed to restore health: {e}")
 
     # Cap the framerate
     clock.tick(60)
