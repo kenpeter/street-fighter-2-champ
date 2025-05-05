@@ -110,33 +110,20 @@ class Lobby:
         self.clearLobby()
 
     def initEnvironment(self, state):
-        """Initializes a game environment that the Agent can play a save state in
-
-        Parameters
-        ----------
-        state
-            A string of the name of the save state to load into the environment
-
-        Returns
-        -------
-        None
-        """
         self.environment = retro.make(
             game=self.game, state=state, players=self.mode.value
         )
         self.environment = StreetFighter2Discretizer(self.environment)
         self.environment.reset()
-        # Handle five return values from step
         self.lastObservation, reward, terminated, truncated, self.lastInfo = (
             self.environment.step(Lobby.NO_ACTION)
         )
-        # Combine terminated and truncated for compatibility with existing code
+        print("Info keys and values:", self.lastInfo)  # Debug print
         self.done = terminated or truncated
         self.lastAction, self.frameInputs = 0, [Lobby.NO_ACTION]
         self.currentJumpFrame = 0
 
         while not self.isActionableState(self.lastInfo, Lobby.NO_ACTION):
-            # Update step to handle five values
             self.lastObservation, reward, terminated, truncated, self.lastInfo = (
                 self.environment.step(Lobby.NO_ACTION)
             )
