@@ -1,7 +1,6 @@
-# using stable retro, not open ai retro
-# using gymnasium, not open ai gym
 import argparse, retro, os, time
 from enum import Enum
+import sys
 from Discretizer import StreetFighter2Discretizer
 
 
@@ -57,6 +56,30 @@ class Lobby:
 
     ### Static Methods
 
+    @staticmethod
+    def load_state_file(state_name):
+        """Helper method to load a state file from the correct location"""
+        # Base directory for state files
+        directory = os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis")
+
+        # Try different possible paths
+        paths_to_try = [
+            os.path.join(directory, f"{state_name}.state"),  # with .state extension
+            os.path.join(directory, state_name),  # without extension
+            state_name,  # just the name (default states)
+        ]
+
+        for path in paths_to_try:
+            if os.path.exists(path):
+                print(f"Found state file at: {path}")
+                with open(path, "rb") as f:
+                    state_data = f.read()
+                return path, state_data
+
+        # If we get here, we couldn't find the state file
+        print(f"Warning: Could not find state file for '{state_name}'")
+        return None, None
+
     # need to get state
     def getStates():
         """Static method that gets and returns a list of all the save state names that can be loaded
@@ -73,11 +96,32 @@ class Lobby:
 
         directory = os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis")
 
-        files = os.listdir(directory)
-        states = [
-            os.path.join(directory, file) for file in files if file.endswith(".state")
-        ]
-        return states
+        # Make sure the directory exists
+        if not os.path.exists(directory):
+            os.makedirs(directory, exist_ok=True)
+            print(f"Created directory: {directory}")
+            return []
+
+        try:
+            files = os.listdir(directory)
+            # Return just the state names without extension
+            states = [
+                os.path.splitext(file)[0] for file in files if file.endswith(".state")
+            ]
+
+            if not states:
+                try:
+                    # Try to create a default state
+                    create_default_state(directory)
+                    return ["default"]
+                except:
+                    print("Could not create a default state")
+
+            print(f"Found states: {states}")
+            return states
+        except Exception as e:
+            print(f"Error getting states: {e}")
+            return []
 
     ### End of static methods
 
@@ -109,46 +153,118 @@ class Lobby:
         self.mode = mode
         self.clearLobby()
 
+        # Register our state directory with retro
+        state_dir = os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis")
+        try:
+            retro.data.add_custom_path(state_dir)
+            print(f"Registered state directory: {state_dir}")
+        except Exception as e:
+            print(f"Warning: Could not register state directory: {e}")
+
     def initEnvironment(self, state):
         print(f"Initializing environment with state: {state}")
-        self.environment = retro.make(
-            game=self.game, state=state, players=self.mode.value
-        )
-        print(
-            f"Environment created with game={self.game}, state={state}, players={self.mode.value}"
-        )
+        try:
+            # First try to use the built-in state with just the name
+            try:
+                self.environment = retro.make(
+                    game=self.game, state=state, players=self.mode.value
+                )
+                print(f"Successfully created environment with built-in state: {state}")
+            except Exception as state_error:
+                print(f"Could not use built-in state '{state}': {state_error}")
 
-        self.environment = StreetFighter2Discretizer(self.environment)
-        print("Applied StreetFighter2Discretizer")
+                # Try with the file path
+                state_path = os.path.join(
+                    os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis"),
+                    f"{state}.state",
+                )
 
-        self.environment.reset()
-        print("Environment reset")
+                if os.path.exists(state_path):
+                    print(f"Using state file at: {state_path}")
+                    # Create environment without state first
+                    self.environment = retro.make(
+                        game=self.game, players=self.mode.value
+                    )
 
-        self.lastObservation, reward, terminated, truncated, self.lastInfo = (
-            self.environment.step(Lobby.NO_ACTION)
-        )
-        print("Environment stepped with NO_ACTION")
-        print(f"Info keys available: {list(self.lastInfo.keys())}")
-        print(f"Full info: {self.lastInfo}")
+                    # Reset the environment
+                    self.environment.reset()
 
-        # Check if expected keys are missing
-        missing_keys = []
-        expected_keys = ["round_timer", "status", "health", "enemy_health"]
-        for key in expected_keys:
-            if key not in self.lastInfo:
-                missing_keys.append(key)
-        if missing_keys:
-            print(f"WARNING: Expected keys missing from info: {missing_keys}")
+                    # Load the state manually
+                    with open(state_path, "rb") as f:
+                        state_data = f.read()
 
-        self.done = terminated or truncated
-        self.lastAction, self.frameInputs = 0, [Lobby.NO_ACTION]
-        self.currentJumpFrame = 0
+                    self.environment.em.set_state(state_data)
+                    print(f"Manually loaded state from: {state_path}")
+                else:
+                    # If we still can't find the state, create a default environment
+                    print(f"State file not found at: {state_path}")
+                    print(f"Creating default environment without state")
+                    self.environment = retro.make(
+                        game=self.game, players=self.mode.value
+                    )
 
-        while not self.isActionableState(self.lastInfo, Lobby.NO_ACTION):
-            self.lastObservation, reward, terminated, truncated, self.lastInfo = (
-                self.environment.step(Lobby.NO_ACTION)
-            )
-            self.done = terminated or truncated
+            # Apply the discretizer
+            self.environment = StreetFighter2Discretizer(self.environment)
+            print("Applied StreetFighter2Discretizer")
+
+            # Reset the environment if needed
+            obs = self.environment.reset()
+            print("Environment reset")
+
+            # Take a step
+            step_result = self.environment.step(Lobby.NO_ACTION)
+            if len(step_result) == 4:  # Old pattern
+                self.lastObservation, reward, done, self.lastInfo = step_result
+                self.done = done
+            else:  # New pattern with 5 returns
+                self.lastObservation, reward, terminated, truncated, self.lastInfo = (
+                    step_result
+                )
+                self.done = terminated or truncated
+
+            print("Environment stepped with NO_ACTION")
+            print(f"Info keys available: {list(self.lastInfo.keys())}")
+
+            # Check if expected keys are missing
+            missing_keys = []
+            expected_keys = ["round_timer", "status", "health", "enemy_health"]
+            for key in expected_keys:
+                if key not in self.lastInfo:
+                    missing_keys.append(key)
+            if missing_keys:
+                print(f"WARNING: Expected keys missing from info: {missing_keys}")
+
+            self.lastAction, self.frameInputs = 0, [Lobby.NO_ACTION]
+            self.currentJumpFrame = 0
+
+            # Wait for an actionable state
+            counter = 0
+            while (
+                not self.isActionableState(self.lastInfo, Lobby.NO_ACTION)
+                and counter < 100
+            ):
+                # Handle both old and new retro API return patterns
+                step_result = self.environment.step(Lobby.NO_ACTION)
+                if len(step_result) == 4:  # Old pattern
+                    self.lastObservation, reward, done, self.lastInfo = step_result
+                    self.done = done
+                else:  # New pattern with 5 returns
+                    (
+                        self.lastObservation,
+                        reward,
+                        terminated,
+                        truncated,
+                        self.lastInfo,
+                    ) = step_result
+                    self.done = terminated or truncated
+
+                counter += 1
+                if counter >= 100:
+                    print("Warning: Could not reach actionable state after 100 steps")
+
+        except Exception as e:
+            print(f"Error initializing environment: {e}")
+            raise
 
     def addPlayer(self, newPlayer):
         """Adds a new player to the player list of active players in this lobby
@@ -202,6 +318,11 @@ class Lobby:
         isActionable
             A boolean variable describing whether the Agent has control over the given state of the game
         """
+        # Check if the required keys exist in info
+        if "round_timer" not in info or "status" not in info:
+            print(f"WARNING: Missing keys in info: {info.keys()}")
+            return True  # Return true to avoid infinite loop
+
         action = self.environment.get_action_meaning(action)
 
         # if there is a timer for the game count down
@@ -241,7 +362,11 @@ class Lobby:
         None
         """
         self.initEnvironment(state)
-        while not self.done:
+        max_steps = 5000  # Limit the number of steps to avoid infinite loops
+        step_count = 0
+
+        while not self.done and step_count < max_steps:
+            step_count += 1
 
             # action is an iterable object that contains an input buffer representing frame by frame inputs
             # the lobby will run through these inputs and enter each one on the appropriate frames
@@ -276,6 +401,9 @@ class Lobby:
                 info,
             ]  # Overwrite after recording step so Agent remembers the previous state that led to this one
 
+        if step_count >= max_steps:
+            print(f"Warning: Reached maximum steps ({max_steps}) for state {state}")
+
         self.environment.close()
         if self.render:
             self.environment.viewer.close()
@@ -296,7 +424,14 @@ class Lobby:
             The image buffer data received from the emulator after entering all input frames
         """
         for frame in self.frameInputs:
-            obs, tempReward, self.done, info = self.environment.step(frame)
+            # Handle both the old (4-return) and new (5-return) patterns
+            step_result = self.environment.step(frame)
+            if len(step_result) == 4:  # old pattern
+                obs, tempReward, self.done, info = step_result
+            else:  # new pattern with 5 returns
+                obs, tempReward, terminated, truncated, info = step_result
+                self.done = terminated or truncated
+
             if self.done:
                 return info, obs
             if self.render:
@@ -326,19 +461,37 @@ class Lobby:
             The image buffer data received from the emulator after finally getting to an actionable state
 
         """
+        # Limit the number of steps to avoid infinite loops
+        max_wait_steps = 100
+        wait_step_count = 0
 
         # to prevent blindly action something, which is not actionable.
-        while not self.isActionableState(info, action=self.frameInputs[-1]):
-            # step, return obs, reward, done, info
-            obs, tempReward, self.done, info = self.environment.step(Lobby.NO_ACTION)
+        while (
+            not self.isActionableState(info, action=self.frameInputs[-1])
+            and wait_step_count < max_wait_steps
+        ):
+            wait_step_count += 1
+
+            # Handle both the old (4-return) and new (5-return) patterns
+            step_result = self.environment.step(Lobby.NO_ACTION)
+            if len(step_result) == 4:  # old pattern
+                obs, tempReward, self.done, info = step_result
+            else:  # new pattern with 5 returns
+                obs, tempReward, terminated, truncated, info = step_result
+                self.done = terminated or truncated
+
             if self.done:
                 return info, obs
             if self.render:
                 self.environment.render()
-            if self.render:
-                self.environment.render()
                 time.sleep(Lobby.FRAME_RATE)
             self.lastReward += tempReward
+
+        if wait_step_count >= max_wait_steps:
+            print(
+                f"Warning: Could not reach actionable state after {max_wait_steps} steps"
+            )
+
         return info, obs
 
     # so we play each opponent in a state file
@@ -360,23 +513,92 @@ class Lobby:
         """
         for episodeNumber in range(episodes):
             print("Starting episode", episodeNumber)
-            # so we play all the states of game almost
-            for state in Lobby.getStates():
-                print(
-                    f"State type: {type(state)}, value: {state}"
-                )  # Add this debug line
-                # play
-                self.play(state=state)
+            # Get available states
+            states = Lobby.getStates()
+
+            if not states:
+                print("No state files found. Creating a default state...")
+                try:
+                    # Try to create a default state
+                    create_default_state()
+                    states = ["default"]
+                except Exception as e:
+                    print(f"Error creating default state: {e}")
+                    print(
+                        "Please create at least one state file before running training."
+                    )
+                    return
+
+            for state in states:
+                print(f"Loading state: {state}")
+                try:
+                    # Play using the state name
+                    self.play(state=state)
+                except Exception as e:
+                    print(f"Error playing state {state}: {e}")
+                    continue
 
             if self.players[0].__class__.__name__ != "Agent" and review == True:
-                self.players[0].reviewFight()
+                try:
+                    self.players[0].reviewFight()
+                except Exception as e:
+                    print(f"Error during review: {e}")
+
+
+def create_default_state():
+    """Create a default state file"""
+    state_dir = os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis")
+    os.makedirs(state_dir, exist_ok=True)
+
+    state_path = os.path.join(state_dir, "default.state")
+
+    # Create the environment and get its state
+    env = retro.make(game="StreetFighterIISpecialChampionEdition-Genesis")
+    env.reset()
+
+    # Take a few steps to stabilize
+    for _ in range(10):
+        env.step([0] * len(env.buttons))
+
+    # Get and save the state
+    state_data = env.em.get_state()
+    with open(state_path, "wb") as f:
+        f.write(state_data)
+
+    # Also save without extension for compatibility
+    with open(os.path.join(state_dir, "default"), "wb") as f:
+        f.write(state_data)
+
+    print(f"Created default state at {state_path}")
+    env.close()
+    return "default"
 
 
 # Makes an example lobby and has a random agent play through an example training run
 if __name__ == "__main__":
-    testLobby = Lobby(render=True)
+    parser = argparse.ArgumentParser(
+        description="Run the Street Fighter II AI training lobby"
+    )
+    parser.add_argument(
+        "--render", action="store_true", help="Render the game visually"
+    )
+    parser.add_argument(
+        "--episodes", type=int, default=1, help="Number of episodes to train"
+    )
+    parser.add_argument(
+        "--create-state",
+        action="store_true",
+        help="Create a default state before running",
+    )
+    args = parser.parse_args()
+
+    if args.create_state:
+        print("Creating default state...")
+        create_default_state()
+
+    testLobby = Lobby(render=args.render)
     from Agent import Agent
 
     agent = Agent()
     testLobby.addPlayer(agent)
-    testLobby.executeTrainingRun()
+    testLobby.executeTrainingRun(episodes=args.episodes)

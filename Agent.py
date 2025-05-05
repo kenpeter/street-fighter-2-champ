@@ -262,15 +262,32 @@ class Agent:
         -------
         None
         """
-        self.model.save_weights(
-            os.path.join(Agent.DEFAULT_MODELS_DIR_PATH, self.getModelName())
+        # Create the models directory if it doesn't exist
+        os.makedirs(Agent.DEFAULT_MODELS_DIR_PATH, exist_ok=True)
+
+        # Fix the model filename to include the required extension
+        model_path = os.path.join(
+            Agent.DEFAULT_MODELS_DIR_PATH, self.getModelName() + ".weights.h5"
         )
-        print("Checkpoint established. model successfully saved")
+
+        # Save the model with the correct file extension
+        self.model.save_weights(model_path)
+        print(f"Model weights saved to {model_path}")
+
+        # Save training logs
+        os.makedirs(Agent.DEFAULT_LOGS_DIR_PATH, exist_ok=True)
         with open(
             os.path.join(Agent.DEFAULT_LOGS_DIR_PATH, self.getLogsName()), "a+"
         ) as file:
-            file.write(str(sum(self.lossHistory.losses) / len(self.lossHistory.losses)))
-            file.write("\n")
+            if (
+                hasattr(self, "lossHistory")
+                and hasattr(self.lossHistory, "losses")
+                and len(self.lossHistory.losses) > 0
+            ):
+                file.write(
+                    str(sum(self.lossHistory.losses) / len(self.lossHistory.losses))
+                )
+                file.write("\n")
 
     def getModelName(self):
         """Returns the formatted model name for the current model"""

@@ -6,7 +6,10 @@ import time
 import os
 
 # Constants
-STATE_SAVE_DIR = "saved_states"  # Directory to save states
+STATE_SAVE_DIR = (
+    "./StreetFighterIISpecialChampionEdition-Genesis"  # Match the path in Lobby.py
+)
+GAME_NAME = "StreetFighterIISpecialChampionEdition-Genesis"
 
 # Initialize Pygame
 pygame.init()
@@ -22,12 +25,11 @@ os.makedirs(STATE_SAVE_DIR, exist_ok=True)
 
 # Create Pygame window
 screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-pygame.display.set_caption("Street Fighter II")
+pygame.display.set_caption("Street Fighter II - State Creator")
 
 # List available states
-game_name = "StreetFighterIISpecialChampionEdition-Genesis"
-available_states = retro.data.list_states(game_name)
-print(f"Available states for {game_name}:")
+available_states = retro.data.list_states(GAME_NAME)
+print(f"Available states for {GAME_NAME}:")
 for state in available_states:
     print(f"- {state}")
 
@@ -37,14 +39,11 @@ selected_state = None
 
 # Create the Retro environment
 env = retro.make(
-    game=game_name,
+    game=GAME_NAME,
     state=selected_state,
     use_restricted_actions=retro.Actions.ALL,
     render_mode="rgb_array",
 )
-
-# Define the path for saving states
-game_state_path = os.path.join(STATE_SAVE_DIR, f"{game_name}_custom.state")
 
 # Print the actual button mapping for verification
 print("Button order in environment:")
@@ -89,9 +88,13 @@ previous_keys = {}
 for key in KEY_MAP.keys():
     previous_keys[key] = False
 
-# Also track O and P keys for save/load state
-previous_keys[pygame.K_o] = False
-previous_keys[pygame.K_p] = False
+# Keys for save state functionality
+previous_keys[pygame.K_o] = False  # Save state
+previous_keys[pygame.K_p] = False  # Load state
+previous_keys[pygame.K_1] = False  # Save as "ken.state"
+previous_keys[pygame.K_2] = False  # Save as "ryu.state"
+previous_keys[pygame.K_3] = False  # Save as "blanka.state"
+previous_keys[pygame.K_4] = False  # Save as "chunli.state"
 
 # Main game loop
 clock = pygame.time.Clock()
@@ -107,9 +110,16 @@ print("- Enter: START (press this to start the game from title screen)")
 print("- C: C button")
 print("- D: Z button")
 print("- Tab: MODE button")
-print("- O: Save current game state")
-print("- P: Load previously saved game state")
+print("- O: Save temporary state")
+print("- P: Load temporary state")
+print("- 1: Save as 'ken.state' (compatible with Lobby.py)")
+print("- 2: Save as 'ryu.state' (compatible with Lobby.py)")
+print("- 3: Save as 'blanka.state' (compatible with Lobby.py)")
+print("- 4: Save as 'chunli.state' (compatible with Lobby.py)")
 print("- ESC: Quit game")
+
+# Temporary state path
+temp_state_path = os.path.join(STATE_SAVE_DIR, "temp.state")
 
 # Frame counter for debug
 frame_counter = 0
@@ -142,36 +152,51 @@ while running:
             print(f"Pressed: {pygame.key.name(key)} -> {env.buttons[button_idx]}")
         previous_keys[key] = current_keys[key]
 
-    # Handle save state (O key)
+    # Handle temporary save state (O key)
     if current_keys[pygame.K_o] and not previous_keys[pygame.K_o]:
         try:
-            # Get the current state
-            save_state = env.em.get_state()
-
-            # Save it to file
-            with open(game_state_path, "wb") as f:
-                f.write(save_state)
-
-            print(f"Game state saved to {game_state_path}")
+            # Use the retro library's save_state method
+            state_data = env.em.get_state()
+            with open(temp_state_path, "wb") as f:
+                f.write(state_data)
+            print(f"Game state saved to {temp_state_path}")
         except Exception as e:
             print(f"Error saving state: {e}")
 
-    # Handle load state (P key)
+    # Handle temporary load state (P key)
     if current_keys[pygame.K_p] and not previous_keys[pygame.K_p]:
-        if os.path.exists(game_state_path):
+        if os.path.exists(temp_state_path):
             try:
-                # Read the state from file
-                with open(game_state_path, "rb") as f:
-                    save_state = f.read()
-
-                # Load it into the emulator
-                env.em.set_state(save_state)
-
-                print(f"Game state loaded from {game_state_path}")
+                with open(temp_state_path, "rb") as f:
+                    state_data = f.read()
+                env.em.set_state(state_data)
+                print(f"Game state loaded from {temp_state_path}")
             except Exception as e:
                 print(f"Error loading state: {e}")
         else:
-            print(f"No saved state found at {game_state_path}")
+            print(f"No saved state found at {temp_state_path}")
+
+    # Save as specific character states (for Lobby.py compatibility)
+    character_keys = {
+        pygame.K_1: "ken.state",
+        pygame.K_2: "ryu.state",
+        pygame.K_3: "blanka.state",
+        pygame.K_4: "chunli.state",
+    }
+
+    for key, state_name in character_keys.items():
+        if current_keys[key] and not previous_keys[key]:
+            try:
+                # Save the current state in the format expected by Lobby.py
+                state_path = os.path.join(STATE_SAVE_DIR, state_name)
+                state_data = env.em.get_state()
+                with open(state_path, "wb") as f:
+                    f.write(state_data)
+                print(f"Game state saved as {state_path} (compatible with Lobby.py)")
+            except Exception as e:
+                print(f"Error saving state as {state_name}: {e}")
+            finally:
+                previous_keys[key] = current_keys[key]
 
     # Update O and P key states
     previous_keys[pygame.K_o] = current_keys[pygame.K_o]
