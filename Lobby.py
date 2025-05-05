@@ -1,4 +1,5 @@
 import argparse, retro, os, time
+import random
 from enum import Enum
 import sys
 from Discretizer import StreetFighter2Discretizer
@@ -50,7 +51,8 @@ class Lobby:
     JUMP_LAG = 4
 
     # time between 2 frame
-    FRAME_RATE = 1 / 115  # The time between frames if real time is enabled
+    # FRAME_RATE = 1 / 115  # The time between frames if real time is enabled
+    FRAME_RATE = 1 / 90  # Slow enough for human viewing
 
     ### End of static variables
 
@@ -477,7 +479,7 @@ class Lobby:
         return info, obs
 
     # so we play each opponent in a state file
-    def executeTrainingRun(self, review=True, episodes=1):
+    def executeTrainingRun(self, review=True, episodes=1, background_training=True):
         """The lobby will load each of the saved states to generate data for the agent to train on
             Note: This will only work for single player mode
 
@@ -489,12 +491,42 @@ class Lobby:
         episodes
             An integer that represents the number of game play episodes to go through before training, once through the roster is one episode
 
+        background_training
+            If True, will train in the background while continuing to render gameplay
+
         Returns
         -------
         None
         """
+
+        def training_thread_function(agent):
+            try:
+                print("Starting training in background thread...")
+                agent.reviewFight()
+                print("Background training completed!")
+            except Exception as e:
+                print(f"Error during background training: {e}")
+                import traceback
+
+                traceback.print_exc()
+
+        # Choose one random episode to display
+        if background_training and episodes > 1:
+            display_episode = random.randint(0, episodes - 1)
+            print(f"Will render episode {display_episode} while training in background")
+        else:
+            display_episode = 0
+
+        # Save original render setting to restore after training specific episodes
+        original_render = self.render
+
         for episodeNumber in range(episodes):
             print("Starting episode", episodeNumber)
+
+            # Only render the selected episode
+            if background_training:
+                self.render = episodeNumber == display_episode
+
             # Get available states
             states = Lobby.getStates()
 
@@ -527,15 +559,41 @@ class Lobby:
                             pass
                     continue
 
-            if self.players[0].__class__.__name__ != "Agent" and review:
-                try:
-                    self.players[0].reviewFight()
-                except Exception as e:
-                    print(f"Error during review: {e}")
-                    # Print traceback for better debugging
-                    import traceback
+            # After the first episode, if it's the one we're rendering, start background training
+            if (
+                episodeNumber == display_episode
+                and background_training
+                and review
+                and self.players[0].__class__.__name__ != "Agent"
+            ):
+                import threading
 
-                    traceback.print_exc()
+                training_thread = threading.Thread(
+                    target=training_thread_function, args=(self.players[0],)
+                )
+                training_thread.daemon = (
+                    True  # Make thread a daemon so it exits when main program exits
+                )
+                training_thread.start()
+
+        # Restore original render setting
+        self.render = original_render
+
+        # If not training in background, do it in the main thread
+        if (
+            not background_training
+            and review
+            and self.players[0].__class__.__name__ != "Agent"
+        ):
+            try:
+                print("Starting review process...")
+                self.players[0].reviewFight()
+                print("Review completed")
+            except Exception as e:
+                print(f"Error during review: {e}")
+                import traceback
+
+                traceback.print_exc()
 
 
 def create_default_state():

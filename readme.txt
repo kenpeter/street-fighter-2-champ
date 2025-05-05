@@ -12,7 +12,5 @@ python -m retro.import .
 
 
 
-retroarch -v gl3 -L /usr/lib/x86_64-linux-gnu/libretro/genesis_plus_gx_libretro.so ./rom.md
+python DeepQAgent.py --episodes 10 --render --background
 
-
-retroarch -v gl3 -L /usr/lib/x86_64-linux-gnu/libretro/genesis_plus_gx_libretro.so ~/work/street-fighter-2-champ/rom.md

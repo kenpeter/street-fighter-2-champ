@@ -350,7 +350,7 @@ if __name__ == "__main__":
         "--episodes",
         type=int,
         default=10,
-        help="Intger representing the number of training rounds to go through, checkpoints are made at the end of each episode",
+        help="Integer representing the number of training rounds to go through, checkpoints are made at the end of each episode",
     )
     parser.add_argument(
         "-n",
@@ -358,6 +358,12 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Name of the instance that will be used when saving the model or it's training logs",
+    )
+    parser.add_argument(
+        "-b",
+        "--background",
+        action="store_true",
+        help="Train in background while rendering a random episode",
     )
     args = parser.parse_args()
     qAgent = DeepQAgent(load=args.load, name=args.name)
@@ -367,5 +373,7 @@ if __name__ == "__main__":
     testLobby = Lobby(render=args.render)
     testLobby.addPlayer(qAgent)
 
-    # in test lobby, we execute training run
-    testLobby.executeTrainingRun(episodes=args.episodes)
+    # Pass the background parameter to executeTrainingRun
+    testLobby.executeTrainingRun(
+        episodes=args.episodes, background_training=args.background
+    )
