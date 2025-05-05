@@ -46,7 +46,7 @@ class Agent:
     # agent takes this action
     ACTION_INDEX = 2  # The action the agent took
 
-    # agent takes this reward
+    # we do have reward here
     REWARD_INDEX = 3  # The reward the agent received for that action
 
     # the next obs index

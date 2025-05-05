@@ -1,3 +1,5 @@
+# using stable retro, not open ai retro
+# using gymnasium, not open ai gym
 import argparse, retro, threading, os, numpy, random, math
 from Agent import Agent
 from LossHistory import LossHistory
@@ -138,6 +140,7 @@ class DeepQAgent(Agent):
         info
             An array of information about the current environment, like player health, enemy health, matches won, and matches lost, etc.
             A full list of info can be found in data.json
+            so the info is from data.json
 
         Returns
         -------
@@ -152,7 +155,9 @@ class DeepQAgent(Agent):
             return move, frameInputs
         else:
             stateData = self.prepareNetworkInputs(info)
+            # the model predict reward
             predictedRewards = self.model.predict(stateData)[0]
+            # reward become move?
             move = numpy.argmax(predictedRewards)
             frameInputs = self.convertMoveToFrameInputs(list(self.moveList)[move], info)
             return move, frameInputs
@@ -228,6 +233,7 @@ class DeepQAgent(Agent):
                 [
                     self.prepareNetworkInputs(step[Agent.STATE_INDEX]),
                     step[Agent.ACTION_INDEX],
+                    # so we access the reward part
                     step[Agent.REWARD_INDEX],
                     step[Agent.DONE_INDEX],
                     self.prepareNetworkInputs(step[Agent.NEXT_STATE_INDEX]),
@@ -255,7 +261,7 @@ class DeepQAgent(Agent):
         """
         feature_vector = []
 
-        # Enemy Data
+        # enemy health, e-x, e-y, e-status
         feature_vector.append(step["enemy_health"])
         feature_vector.append(step["enemy_x_position"])
         feature_vector.append(step["enemy_y_position"])

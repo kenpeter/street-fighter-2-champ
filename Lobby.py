@@ -1,4 +1,5 @@
-# arg, enum,
+# using stable retro, not open ai retro
+# using gymnasium, not open ai gym
 import argparse, retro, os, time
 from enum import Enum
 from Discretizer import StreetFighter2Discretizer
@@ -122,13 +123,20 @@ class Lobby:
         # 2D discretizer
         self.environment = StreetFighter2Discretizer(self.environment)
         self.environment.reset()
+
+        # the env.step, will generate last info
         self.lastObservation, _, _, self.lastInfo = self.environment.step(
             Lobby.NO_ACTION
-        )  # The initial observation and state info are gathered by doing nothing the first frame and viewing the return data
+        )
+
+        # The initial observation and state info are gathered by doing nothing the first frame and viewing the return data
         self.lastAction, self.frameInputs = 0, [Lobby.NO_ACTION]
+
         self.currentJumpFrame = 0
         self.done = False
+
         while not self.isActionableState(self.lastInfo, Lobby.NO_ACTION):
+            # env.step will gen last obs, last info
             self.lastObservation, _, _, self.lastInfo = self.environment.step(
                 Lobby.NO_ACTION
             )
@@ -228,6 +236,9 @@ class Lobby:
 
             # action is an iterable object that contains an input buffer representing frame by frame inputs
             # the lobby will run through these inputs and enter each one on the appropriate frames
+
+            # last action, frame input
+            # from player(obs, lastinfo)
             self.lastAction, self.frameInputs = self.players[0].getMove(
                 self.lastObservation, self.lastInfo
             )
@@ -237,9 +248,11 @@ class Lobby:
             info, obs = self.enterFrameInputs()
             info, obs = self.waitForNextActionableState(info, obs)
 
-            # Record Results
+            # in lobby, we record player's step
+            #
             self.players[0].recordStep(
                 (
+                    # last obs, last info, last action, last reward, obs, info, done
                     self.lastObservation,
                     self.lastInfo,
                     self.lastAction,
@@ -307,6 +320,7 @@ class Lobby:
 
         # to prevent blindly action something, which is not actionable.
         while not self.isActionableState(info, action=self.frameInputs[-1]):
+            # step, return obs, reward, done, info
             obs, tempReward, self.done, info = self.environment.step(Lobby.NO_ACTION)
             if self.done:
                 return info, obs
@@ -339,6 +353,9 @@ class Lobby:
             print("Starting episode", episodeNumber)
             # so we play all the states of game almost
             for state in Lobby.getStates():
+                print(
+                    f"State type: {type(state)}, value: {state}"
+                )  # Add this debug line
                 # play
                 self.play(state=state)
 
