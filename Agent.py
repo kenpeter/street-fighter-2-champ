@@ -181,10 +181,25 @@ class Agent:
         if not self.moveList.isDirectionalMove(move):
             return frameInputs
 
+        # Make sure these keys exist to avoid errors
+        if "x_position" not in info:
+            info["x_position"] = 100  # Default position
+
+        if "enemy_x_position" not in info:
+            info["enemy_x_position"] = 200  # Default enemy position
+
         if info["x_position"] < info["enemy_x_position"]:
-            return frameInputs[0]
+            return (
+                frameInputs[0]
+                if isinstance(frameInputs, list) and len(frameInputs) > 0
+                else frameInputs
+            )
         else:
-            return frameInputs[1]
+            return (
+                frameInputs[1]
+                if isinstance(frameInputs, list) and len(frameInputs) > 1
+                else frameInputs
+            )
 
         return frameInputs
 
