@@ -253,19 +253,24 @@ class Agent:
 
     # load the model
     def loadModel(self):
-        """Loads in pretrained model object ../models/{Instance_Name}Model
-        Parameters
-        ----------
-        None
+        # Check if the model file exists with different extensions
+        model_path = f"../models/{self.name}Model"
 
-        Returns
-        -------
-        None
-        """
-        self.model.load_weights(
-            os.path.join(Agent.DEFAULT_MODELS_DIR_PATH, self.getModelName())
-        )
-        print("Model successfully loaded")
+        # Try with different extensions
+        for ext in [".keras", ".weights.h5", ".h5"]:
+            full_path = model_path + ext
+            if os.path.exists(full_path):
+                print(f"Found model file: {full_path}")
+                try:
+                    self.model.load_weights(full_path)
+                    print("Model loaded successfully!")
+                    return
+                except Exception as e:
+                    print(f"Error loading model: {e}")
+
+        # If we get here, no valid model file was found
+        print(f"No valid model file found at {model_path}[.keras/.weights.h5/.h5]")
+        print("Starting with a new model.")
 
     def saveModel(self):
         """Saves the currently trained model in the default naming convention ../models/{Instance_Name}Model

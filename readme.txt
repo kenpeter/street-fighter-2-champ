@@ -12,5 +12,5 @@ python -m retro.import .
 
 
 
-python DeepQAgent.py --episodes 10 --render --background
+python DeepQAgent.py --episodes 10 --render --background -l
 

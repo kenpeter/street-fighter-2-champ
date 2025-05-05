@@ -52,7 +52,7 @@ class Lobby:
 
     # time between 2 frame
     # FRAME_RATE = 1 / 115  # The time between frames if real time is enabled
-    FRAME_RATE = 1 / 90  # Slow enough for human viewing
+    FRAME_RATE = 1 / 200  # Slow enough for human viewing
 
     ### End of static variables
 
@@ -358,20 +358,10 @@ class Lobby:
         return True
 
     def play(self, state):
-        """The Agent will load the specified save state and play through it until finished, recording the fight for training
-
-        Parameters
-        ----------
-        state
-            A string of the name of the save state the Agent will be playing
-
-        Returns
-        -------
-        None
-        """
+        """The Agent will load the specified save state and play through it until finished"""
         try:
             self.initEnvironment(state)
-            max_steps = 500  # Limit the number of steps
+            max_steps = 2000  # Increase from 500 to 2000
             step_count = 0
 
             while not self.done and step_count < max_steps:
@@ -389,7 +379,6 @@ class Lobby:
                 # Record step
                 self.players[0].recordStep(
                     (
-                        # last obs, last info, last action, last reward, obs, info, done
                         self.lastObservation,
                         self.lastInfo,
                         self.lastAction,
@@ -400,6 +389,19 @@ class Lobby:
                     )
                 )
                 self.lastObservation, self.lastInfo = [obs, info]
+
+                # Add verbose output to track game progress
+                if step_count % 100 == 0:
+                    print(
+                        f"Step {step_count}, Player health: {info['health']}, Enemy health: {info['enemy_health']}"
+                    )
+
+            if step_count >= max_steps:
+                print(
+                    "WARNING: Episode terminated due to step limit, not game completion"
+                )
+            else:
+                print("Episode completed naturally")
 
             # Close the environment
             if self.environment is not None:
