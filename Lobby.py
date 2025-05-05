@@ -124,27 +124,23 @@ class Lobby:
         self.environment = retro.make(
             game=self.game, state=state, players=self.mode.value
         )
-
-        # 2D discretizer
         self.environment = StreetFighter2Discretizer(self.environment)
         self.environment.reset()
-
-        # the env.step, will generate last info
-        self.lastObservation, _, _, self.lastInfo = self.environment.step(
-            Lobby.NO_ACTION
+        # Handle five return values from step
+        self.lastObservation, reward, terminated, truncated, self.lastInfo = (
+            self.environment.step(Lobby.NO_ACTION)
         )
-
-        # The initial observation and state info are gathered by doing nothing the first frame and viewing the return data
+        # Combine terminated and truncated for compatibility with existing code
+        self.done = terminated or truncated
         self.lastAction, self.frameInputs = 0, [Lobby.NO_ACTION]
-
         self.currentJumpFrame = 0
-        self.done = False
 
         while not self.isActionableState(self.lastInfo, Lobby.NO_ACTION):
-            # env.step will gen last obs, last info
-            self.lastObservation, _, _, self.lastInfo = self.environment.step(
-                Lobby.NO_ACTION
+            # Update step to handle five values
+            self.lastObservation, reward, terminated, truncated, self.lastInfo = (
+                self.environment.step(Lobby.NO_ACTION)
             )
+            self.done = terminated or truncated
 
     def addPlayer(self, newPlayer):
         """Adds a new player to the player list of active players in this lobby
