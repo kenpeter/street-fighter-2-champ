@@ -110,15 +110,36 @@ class Lobby:
         self.clearLobby()
 
     def initEnvironment(self, state):
+        print(f"Initializing environment with state: {state}")
         self.environment = retro.make(
             game=self.game, state=state, players=self.mode.value
         )
+        print(
+            f"Environment created with game={self.game}, state={state}, players={self.mode.value}"
+        )
+
         self.environment = StreetFighter2Discretizer(self.environment)
+        print("Applied StreetFighter2Discretizer")
+
         self.environment.reset()
+        print("Environment reset")
+
         self.lastObservation, reward, terminated, truncated, self.lastInfo = (
             self.environment.step(Lobby.NO_ACTION)
         )
-        print("Info keys and values:", self.lastInfo)  # Debug print
+        print("Environment stepped with NO_ACTION")
+        print(f"Info keys available: {list(self.lastInfo.keys())}")
+        print(f"Full info: {self.lastInfo}")
+
+        # Check if expected keys are missing
+        missing_keys = []
+        expected_keys = ["round_timer", "status", "health", "enemy_health"]
+        for key in expected_keys:
+            if key not in self.lastInfo:
+                missing_keys.append(key)
+        if missing_keys:
+            print(f"WARNING: Expected keys missing from info: {missing_keys}")
+
         self.done = terminated or truncated
         self.lastAction, self.frameInputs = 0, [Lobby.NO_ACTION]
         self.currentJumpFrame = 0
