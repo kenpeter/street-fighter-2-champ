@@ -70,8 +70,13 @@ class Lobby:
         states
             A list of strings where each string is the name of a different save state
         """
-        files = os.listdir("./StreetFighterIISpecialChampionEdition-Genesis")
-        states = [file.split(".")[0] for file in files if file.split(".")[1] == "state"]
+
+        directory = os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis")
+
+        files = os.listdir(directory)
+        states = [
+            os.path.join(directory, file) for file in files if file.endswith(".state")
+        ]
         return states
 
     ### End of static methods
