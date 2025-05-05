@@ -295,22 +295,20 @@ class DeepQAgent(Agent):
         return feature_vector
 
     def trainNetwork(self, data, model):
-        """To be implemented in child class, Runs through a training epoch reviewing the training data
-        Parameters
-        ----------
-        data
-            The training data for the model to train on, a 2D array of state, action, reward, sequence
+        # Limit the batch size to prevent too many iterations
+        max_samples = min(
+            len(data), 100
+        )  # Process at most 100 samples per training run
+        minibatch = random.sample(data, max_samples)
 
-        model
-            The model to train and return the Agent to continue playing with
-        Returns
-        -------
-        model
-            The input model now updated after this round of training on data
-        """
-        minibatch = random.sample(data, len(data))
         self.lossHistory.losses_clear()
+        batch_count = 0
+        max_batches = 20  # Set a maximum number of batches
+
         for state, action, reward, done, next_state in minibatch:
+            if batch_count >= max_batches:
+                break
+
             modelOutput = model.predict(state)[0]
             if not done:
                 reward = reward + self.gamma * numpy.amax(model.predict(next_state)[0])
@@ -320,6 +318,7 @@ class DeepQAgent(Agent):
             model.fit(
                 state, modelOutput, epochs=1, verbose=0, callbacks=[self.lossHistory]
             )
+            batch_count += 1
 
         if self.epsilon > DeepQAgent.EPSILON_MIN:
             self.epsilon *= self.epsilonDecay
