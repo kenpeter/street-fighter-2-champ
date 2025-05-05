@@ -77,15 +77,17 @@ class DeepQAgent(Agent):
     # can tailor for huge err and small err
     def _huber_loss(y_true, y_pred, clip_delta=1.0):
         """Implementation of huber loss to use as the loss function for the model"""
-        error = y_true - y_pred
-        cond = K.abs(error) <= clip_delta
+        import tensorflow as tf
 
-        squared_loss = 0.5 * K.square(error)
-        quadratic_loss = 0.5 * K.square(clip_delta) + clip_delta * (
-            K.abs(error) - clip_delta
+        error = y_true - y_pred
+        cond = tf.abs(error) <= clip_delta
+
+        squared_loss = 0.5 * tf.square(error)
+        quadratic_loss = 0.5 * tf.square(clip_delta) + clip_delta * (
+            tf.abs(error) - clip_delta
         )
 
-        return K.mean(tf.where(cond, squared_loss, quadratic_loss))
+        return tf.reduce_mean(tf.where(cond, squared_loss, quadratic_loss))
 
     def __init__(self, stateSize=32, load=False, epsilon=1, name=None, moveList=Moves):
         """Initializes the agent and the underlying neural network

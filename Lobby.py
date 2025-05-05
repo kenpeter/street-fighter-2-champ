@@ -125,6 +125,116 @@ class Lobby:
         self.clearLobby()
         self.environment = None
 
+        # Define memory addresses directly in the class
+        self.ram_info = {
+            "continue_timer": {"address": 16744917, "type": "|u1"},
+            "round_timer": {"address": 16750378, "type": ">u2"},
+            "enemy_health": {"address": 16745154, "type": ">i2"},
+            "enemy_x_position": {"address": 16745094, "type": ">u2"},
+            "enemy_y_position": {"address": 16745098, "type": ">u2"},
+            "enemy_matches_won": {"address": 16745559, "type": ">u4"},
+            "enemy_status": {"address": 16745090, "type": ">u2"},
+            "enemy_character": {"address": 16745563, "type": "|u1"},
+            "health": {"address": 16744514, "type": ">i2"},
+            "x_position": {"address": 16744454, "type": ">u2"},
+            "y_position": {"address": 16744458, "type": ">u2"},
+            "status": {"address": 16744450, "type": ">u2"},
+            "matches_won": {"address": 16744922, "type": "|u1"},
+            "score": {"address": 16744936, "type": ">d4"},
+        }
+
+    def read_ram_values(self, info):
+        """Read RAM values and populate the info dictionary"""
+        if self.environment is None:
+            return info
+
+        try:
+            # Get raw RAM from the unwrapped environment
+            if hasattr(self.environment.unwrapped, "get_ram"):
+                ram = self.environment.unwrapped.get_ram()
+            elif hasattr(self.environment.unwrapped, "em") and hasattr(
+                self.environment.unwrapped.em, "get_ram"
+            ):
+                ram = self.environment.unwrapped.em.get_ram()
+            else:
+                # Can't access RAM, use default values
+                return self.ensureRequiredKeys(info)
+
+            for key, address_info in self.ram_info.items():
+                addr = address_info["address"]
+                data_type = address_info["type"]
+
+                # Check if address is in valid range
+                if addr >= len(ram):
+                    continue
+
+                try:
+                    # Extract value based on type
+                    if data_type == "|u1":
+                        # Unsigned 1-byte
+                        value = ram[addr]
+                    elif data_type == ">u2":
+                        # Big-endian 2-byte unsigned int
+                        if addr + 1 < len(ram):
+                            value = (ram[addr] << 8) | ram[addr + 1]
+                        else:
+                            continue
+                    elif data_type == ">i2":
+                        # Big-endian 2-byte signed int
+                        if addr + 1 < len(ram):
+                            value = (ram[addr] << 8) | ram[addr + 1]
+                            # Convert to signed if necessary
+                            if value >= 32768:
+                                value -= 65536
+                        else:
+                            continue
+                    elif data_type == ">u4":
+                        # Big-endian 4-byte unsigned int
+                        if addr + 3 < len(ram):
+                            value = (
+                                (ram[addr] << 24)
+                                | (ram[addr + 1] << 16)
+                                | (ram[addr + 2] << 8)
+                                | ram[addr + 3]
+                            )
+                        else:
+                            continue
+                    elif data_type == ">d4":
+                        # Big-endian 4-byte decimal (assuming this is a float)
+                        if addr + 3 < len(ram):
+                            import struct
+
+                            try:
+                                value = struct.unpack(
+                                    ">f",
+                                    bytes(
+                                        [
+                                            ram[addr],
+                                            ram[addr + 1],
+                                            ram[addr + 2],
+                                            ram[addr + 3],
+                                        ]
+                                    ),
+                                )[0]
+                            except struct.error:
+                                value = 0
+                        else:
+                            continue
+                    else:
+                        # Default case
+                        value = ram[addr]
+
+                    # Store in info dict
+                    info[key] = value
+                except Exception as e:
+                    print(f"Error reading RAM for {key}: {e}")
+
+        except Exception as e:
+            print(f"Error reading RAM: {e}")
+
+        # Make sure all required keys exist
+        return self.ensureRequiredKeys(info)
+
     def initEnvironment(self, state):
         print(f"Initializing environment with state: {state}")
         try:
@@ -178,18 +288,10 @@ class Lobby:
             print("Environment stepped with NO_ACTION")
             print(f"Info keys available: {list(self.lastInfo.keys())}")
 
-            # Add missing keys that might be needed
-            if "round_timer" not in self.lastInfo:
-                self.lastInfo["round_timer"] = 0  # Default value
+            # Read RAM values to populate info dictionary
+            self.lastInfo = self.read_ram_values(self.lastInfo)
 
-            if "status" not in self.lastInfo:
-                self.lastInfo["status"] = Lobby.STANDING_STATUS  # Default to standing
-
-            if "x_position" not in self.lastInfo:
-                self.lastInfo["x_position"] = 100  # Default position
-
-            if "enemy_x_position" not in self.lastInfo:
-                self.lastInfo["enemy_x_position"] = 200  # Default enemy position
+            print(f"Info keys after RAM reading: {list(self.lastInfo.keys())}")
 
             self.lastAction, self.frameInputs = 0, [Lobby.NO_ACTION]
             self.currentJumpFrame = 0
@@ -282,9 +384,6 @@ class Lobby:
                 self.lastReward = 0
                 info, obs = self.enterFrameInputs()
 
-                # Make sure all required keys exist in the info dict
-                self.ensureRequiredKeys(info)
-
                 # Record step
                 self.players[0].recordStep(
                     (
@@ -320,17 +419,27 @@ class Lobby:
     def ensureRequiredKeys(self, info):
         """Make sure all required keys exist in the info dictionary"""
         required_keys = {
+            "continue_timer": 0,
             "round_timer": 0,
-            "status": Lobby.STANDING_STATUS,
-            "x_position": 100,
-            "enemy_x_position": 200,
-            "health": 100,
             "enemy_health": 100,
+            "enemy_x_position": 200,
+            "enemy_y_position": 0,
+            "enemy_matches_won": 0,
+            "enemy_status": Lobby.STANDING_STATUS,
+            "enemy_character": 0,
+            "health": 100,
+            "x_position": 100,
+            "y_position": 0,
+            "status": Lobby.STANDING_STATUS,
+            "matches_won": 0,
+            "score": 0,
         }
 
         for key, default_value in required_keys.items():
             if key not in info:
                 info[key] = default_value
+
+        return info
 
     def enterFrameInputs(self):
         """Enter each of the frame inputs in the input buffer inside the last action object supplied by the Agent
@@ -355,6 +464,9 @@ class Lobby:
             else:  # new pattern with 5 returns
                 obs, tempReward, terminated, truncated, info = step_result
                 self.done = terminated or truncated
+
+            # Read RAM values to populate info dictionary
+            info = self.read_ram_values(info)
 
             if self.done:
                 return info, obs
@@ -420,6 +532,10 @@ class Lobby:
                     self.players[0].reviewFight()
                 except Exception as e:
                     print(f"Error during review: {e}")
+                    # Print traceback for better debugging
+                    import traceback
+
+                    traceback.print_exc()
 
 
 def create_default_state():
