@@ -15,6 +15,12 @@ python -m retro.import .
 python DeepQAgent.py --episodes 10 --render --background -l
 
 
+python myagent.py --episodes 10 --render --background -l
+
+
+
+
+
 
 All SF2 Characters as Save States
 

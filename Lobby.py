@@ -52,13 +52,13 @@ class Lobby:
 
     # time between 2 frame
     # FRAME_RATE = 1 / 115  # The time between frames if real time is enabled
-    FRAME_RATE = 1 / 200  # Slow enough for human viewing
+    FRAME_RATE = 1 / 300  # Slow enough for human viewing
 
     ### End of static variables
 
     ### Static Methods
 
-    # need to get state
+    # we load all state file
     def getStates():
         """Static method that gets and returns a list of all the save state names that can be loaded
 
