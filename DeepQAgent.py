@@ -136,7 +136,7 @@ class DeepQAgent(Agent):
         elif resume:
             # Resume mode - higher exploration for continued training
             # Set epsilon to a moderate value (0.3) to balance exploration and exploitation
-            self.epsilon = epsilon
+            self.epsilon = 0.5
         else:
             # Fresh training mode - maximum exploration
             self.epsilon = epsilon
