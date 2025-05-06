@@ -89,7 +89,15 @@ class DeepQAgent(Agent):
 
         return tf.reduce_mean(tf.where(cond, squared_loss, quadratic_loss))
 
-    def __init__(self, stateSize=32, load=False, epsilon=1, name=None, moveList=Moves):
+    def __init__(
+        self,
+        stateSize=32,
+        load=False,
+        resume=False,
+        epsilon=1,
+        name=None,
+        moveList=Moves,
+    ):
         """Initializes the agent and the underlying neural network
 
         Parameters
@@ -99,6 +107,9 @@ class DeepQAgent(Agent):
 
         load
             A boolean flag that specifies whether to initialize the model from scratch or load in a pretrained model
+
+        resume
+            A boolean flag that specifies whether to load a pretrained model but with higher exploration rate for continued training
 
         epsilon
             The initial exploration value to assume when the model is initialized. If a model is lodaed this is set
@@ -118,15 +129,24 @@ class DeepQAgent(Agent):
         self.stateSize = stateSize
         self.actionSize = len(moveList)
         self.gamma = DeepQAgent.DEFAULT_DISCOUNT_RATE  # discount rate
-        if load:
-            self.epsilon = (
-                DeepQAgent.EPSILON_MIN
-            )  # If the model is already trained lower the exploration rate
+
+        if load and not resume:
+            # Standard load mode - minimum exploration
+            self.epsilon = DeepQAgent.EPSILON_MIN
+        elif resume:
+            # Resume mode - higher exploration for continued training
+            # Set epsilon to a moderate value (0.3) to balance exploration and exploitation
+            self.epsilon = epsilon
         else:
-            self.epsilon = epsilon  # If the model is not trained set a high initial exploration rate
-        self.epsilonDecay = (
-            DeepQAgent.DEFAULT_EPSILON_DECAY
-        )  # How fast the exploration rate falls as training persists
+            # Fresh training mode - maximum exploration
+            self.epsilon = epsilon
+
+        # You might want a different decay rate for resume mode to ensure it explores sufficiently
+        if resume:
+            self.epsilonDecay = 0.9995  # Slower decay for resumed training
+        else:
+            self.epsilonDecay = DeepQAgent.DEFAULT_EPSILON_DECAY
+
         self.learningRate = DeepQAgent.DEFAULT_LEARNING_RATE
         self.lossHistory = LossHistory()
         super(DeepQAgent, self).__init__(load=load, name=name, moveList=moveList)
@@ -365,8 +385,23 @@ if __name__ == "__main__":
         action="store_true",
         help="Train in background while rendering a random episode",
     )
+
+    parser.add_argument(
+        "-re",
+        "--resume",
+        action="store_true",
+        help="Boolean flag for loading a pre-existing model but with higher exploration for continued training",
+    )
+
     args = parser.parse_args()
-    qAgent = DeepQAgent(load=args.load, name=args.name)
+    # Then modify the DeepQAgent initialization in the main block
+    if args.load:
+        qAgent = DeepQAgent(load=True, name=args.name)
+    elif args.resume:
+        # Initialize with resume mode - will be defined in the DeepQAgent class
+        qAgent = DeepQAgent(load=True, resume=True, name=args.name)
+    else:
+        qAgent = DeepQAgent(load=False, name=args.name)
 
     from Lobby import Lobby
 
