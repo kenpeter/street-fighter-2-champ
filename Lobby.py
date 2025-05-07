@@ -308,7 +308,7 @@ class Lobby:
         """The Agent will load the specified save state and play through it until finished"""
         try:
             self.initEnvironment(state)
-            max_steps = 2000
+            max_steps = 3000
             step_count = 0
 
             while not self.done and step_count < max_steps:

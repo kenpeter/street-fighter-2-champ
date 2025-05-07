@@ -13,7 +13,7 @@ python -m retro.import .
 
 
 
-python Lobby.py --episodes 20 --background --resume
+python Lobby.py --episodes 10 --background --resume
 
 
 
