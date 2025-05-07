@@ -301,15 +301,102 @@ class Lobby:
         self.players = [None] * self.mode.value
 
     def isActionableState(self, info, action=0):
-        """Determines if the Agent has control over the game in it's current state"""
-        return True
+        action = self.environment.get_action_meaning(action)
+
+        if info.get("health", 100) <= 0:
+            return False
+
+        # Check if the enemy is dead (enemy_health <= 0)
+        if info.get("enemy_health", 100) <= 0:
+            return False
+
+        # Check round timer (if it exists and is 0, round is over)
+        if "round_timer" in info and info["round_timer"] == 0:
+            return False
+
+        if info["round_timer"] == Lobby.ROUND_TIMER_NOT_STARTED:
+            return False
+        elif (
+            info["status"] == Lobby.JUMPING_STATUS
+            and self.currentJumpFrame <= Lobby.JUMP_LAG
+        ):
+            self.currentJumpFrame += 1
+            return False
+        elif info["status"] == Lobby.JUMPING_STATUS and any(
+            [button in action for button in Lobby.ACTION_BUTTONS]
+        ):  # Have to manually track if we are in a jumping attack
+            return False
+        elif (
+            info["status"] not in Lobby.ACTIONABLE_STATUSES
+        ):  # Standing, Crouching, or Jumping
+            return False
+        else:
+            if info["status"] != Lobby.JUMPING_STATUS and self.currentJumpFrame > 0:
+                self.currentJumpFrame = 0
+            return True
+
+    # Add this function to the Lobby class to monitor game state
+
+    def monitor_game_state(self, info, step_count):
+        """Monitor game state and log detailed information for debugging unexpected closures"""
+        try:
+            # Define terminal states directly in this method
+            # These were originally in DeepQAgent class
+            terminal_states = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
+
+            # Create detailed state log
+            state_log = {
+                "step": step_count,
+                "health": info.get("health", -1),
+                "enemy_health": info.get("enemy_health", -1),
+                "status": info.get("status", -1),
+                "enemy_status": info.get("enemy_status", -1),
+                "x_position": info.get("x_position", -1),
+                "enemy_x_position": info.get("enemy_x_position", -1),
+                "done_flag": self.done,
+            }
+
+            # Check for critical game states that might cause closure
+            if info.get("status", 0) in terminal_states:
+                print(f"WARNING: Player in terminal state: {info['status']}")
+
+            if info.get("enemy_status", 0) in terminal_states:
+                print(f"WARNING: Enemy in terminal state: {info['enemy_status']}")
+
+            # If health is zero or negative, game might be ending
+            if info.get("health", 100) <= 0:
+                print(f"ALERT: Player health is zero or negative: {info['health']}")
+
+            if info.get("enemy_health", 100) <= 0:
+                print(
+                    f"ALERT: Enemy health is zero or negative: {info['enemy_health']}"
+                )
+
+            # Log every 100 steps or when something unusual happens
+            unusual_event = (
+                info.get("health", 100) <= 20
+                or info.get("enemy_health", 100) <= 20
+                or info.get("status", 0) in terminal_states
+                or info.get("enemy_status", 0) in terminal_states
+            )
+
+            if step_count % 100 == 0 or unusual_event:
+                print(f"STATE LOG [{step_count}]: {state_log}")
+
+            return state_log
+        except Exception as e:
+            print(f"Error in monitor_game_state: {e}")
+            return None
+
+    # Then update the play method to add this monitoring:
 
     def play(self, state):
         """The Agent will load the specified save state and play through it until finished"""
         try:
             self.initEnvironment(state)
-            max_steps = 3000
+            max_steps = 2500  # Increased to 2500 as requested
             step_count = 0
+            last_states = []  # Keep track of last few states before closure
 
             while not self.done and step_count < max_steps:
                 step_count += 1
@@ -328,7 +415,25 @@ class Lobby:
                     )
 
                 self.lastReward = 0
-                info, obs = self.enterFrameInputs()
+
+                # Add more detailed exception handling for enterFrameInputs
+                try:
+                    info, obs = self.enterFrameInputs()
+                except Exception as e:
+                    print(f"ERROR during frame inputs: {e}")
+                    import traceback
+
+                    traceback.print_exc()
+                    print(f"Last known state before error: {self.lastInfo}")
+                    self.done = True
+                    break
+
+                # Record state for diagnostics
+                state_log = self.monitor_game_state(info, step_count)
+                if state_log:
+                    last_states.append(state_log)
+                    if len(last_states) > 5:  # Keep only the last 5 states
+                        last_states.pop(0)
 
                 # Track episode reward
                 self.episode_reward += self.lastReward
@@ -350,6 +455,157 @@ class Lobby:
                     print(
                         f"Step {step_count}, Player health: {info['health']}, Enemy health: {info['enemy_health']}"
                     )
+
+            # If game closed unexpectedly (not at max_steps and not properly finished)
+            if self.done and step_count < max_steps:
+                print("\n===== GAME CLOSED UNEXPECTEDLY =====")
+                print(f"Steps completed: {step_count}/{max_steps}")
+                print(
+                    f"Last known player health: {self.lastInfo.get('health', 'Unknown')}"
+                )
+                print(
+                    f"Last known enemy health: {self.lastInfo.get('enemy_health', 'Unknown')}"
+                )
+                print(
+                    f"Last known player status: {self.lastInfo.get('status', 'Unknown')}"
+                )
+                print(
+                    f"Last known enemy status: {self.lastInfo.get('enemy_status', 'Unknown')}"
+                )
+                print("\nState history before closure:")
+                for i, state in enumerate(last_states):
+                    print(f"  State {i+1}: {state}")
+                print("==============================\n")
+
+            # Update episode statistics
+            self.training_stats["episodes_run"] += 1
+            self.training_stats["episode_rewards"].append(self.episode_reward)
+
+            # Determine win/loss by comparing health
+            if self.lastInfo.get("health", 0) > self.lastInfo.get("enemy_health", 0):
+                self.training_stats["wins"] += 1
+                self.training_stats["session_wins"] += 1
+                print("Episode result: WIN")
+            else:
+                self.training_stats["losses"] += 1
+                self.training_stats["session_losses"] += 1
+                print("Episode result: LOSS")
+
+            print(f"Episode steps: {self.episode_steps}")
+            print(f"Episode reward: {self.episode_reward}")
+            print(f"Total steps so far: {self.training_stats['total_steps']}")
+
+            if step_count >= max_steps:
+                print(
+                    "WARNING: Episode terminated due to step limit, not game completion"
+                )
+            else:
+                print("Episode completed naturally")
+
+            if self.environment is not None:
+                try:
+                    self.environment.close()
+                    self.environment = None
+                except:
+                    pass
+
+        except Exception as e:
+            print(f"Error playing state {state}: {e}")
+            import traceback
+
+            traceback.print_exc()
+            if self.environment is not None:
+                try:
+                    self.environment.close()
+                    self.environment = None
+                except:
+                    pass
+
+        """The Agent will load the specified save state and play through it until finished"""
+        try:
+            self.initEnvironment(state)
+            max_steps = 2000
+            step_count = 0
+            last_states = []  # Keep track of last few states before closure
+
+            while not self.done and step_count < max_steps:
+                step_count += 1
+                self.episode_steps += 1
+                self.training_stats["total_steps"] += 1
+
+                # Wrap prediction in GPU context if GPU is available
+                if len(physical_devices) > 0:
+                    with tf.device("/GPU:0"):
+                        self.lastAction, self.frameInputs = self.players[0].getMove(
+                            self.lastObservation, self.lastInfo
+                        )
+                else:
+                    self.lastAction, self.frameInputs = self.players[0].getMove(
+                        self.lastObservation, self.lastInfo
+                    )
+
+                self.lastReward = 0
+
+                # Add more detailed exception handling for enterFrameInputs
+                try:
+                    info, obs = self.enterFrameInputs()
+                except Exception as e:
+                    print(f"ERROR during frame inputs: {e}")
+                    import traceback
+
+                    traceback.print_exc()
+                    print(f"Last known state before error: {self.lastInfo}")
+                    self.done = True
+                    break
+
+                # Record state for diagnostics
+                state_log = self.monitor_game_state(info, step_count)
+                if state_log:
+                    last_states.append(state_log)
+                    if len(last_states) > 5:  # Keep only the last 5 states
+                        last_states.pop(0)
+
+                # Track episode reward
+                self.episode_reward += self.lastReward
+
+                self.players[0].recordStep(
+                    (
+                        self.lastObservation,
+                        self.lastInfo,
+                        self.lastAction,
+                        self.lastReward,
+                        obs,
+                        info,
+                        self.done,
+                    )
+                )
+                self.lastObservation, self.lastInfo = [obs, info]
+
+                if step_count % 100 == 0:
+                    print(
+                        f"Step {step_count}, Player health: {info['health']}, Enemy health: {info['enemy_health']}"
+                    )
+
+            # If game closed unexpectedly (not at max_steps and not properly finished)
+            if self.done and step_count < max_steps:
+                print("\n===== GAME CLOSED UNEXPECTEDLY =====")
+                print(f"Steps completed: {step_count}/{max_steps}")
+                print(
+                    f"Last known player health: {self.lastInfo.get('health', 'Unknown')}"
+                )
+                print(
+                    f"Last known enemy health: {self.lastInfo.get('enemy_health', 'Unknown')}"
+                )
+                print(
+                    f"Last known player status: {self.lastInfo.get('status', 'Unknown')}"
+                )
+                print(
+                    f"Last known enemy status: {self.lastInfo.get('enemy_status', 'Unknown')}"
+                )
+                print("\nState history before closure:")
+                for i, state in enumerate(last_states):
+                    print(f"  State {i+1}: {state}")
+                print("==============================\n")
 
             # Update episode statistics
             self.training_stats["episodes_run"] += 1
@@ -428,6 +684,13 @@ class Lobby:
                 self.done = terminated or truncated
 
             info = self.read_ram_values(info)
+
+            # Set done flag if health reaches zero or negative
+            if info.get("health", 100) <= 0 or info.get("enemy_health", 100) <= 0:
+                self.done = True
+                print(
+                    f"Game terminated: Player health={info.get('health', 'Unknown')}, Enemy health={info.get('enemy_health', 'Unknown')}"
+                )
 
             if self.done:
                 return info, obs
