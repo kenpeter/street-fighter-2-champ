@@ -3,6 +3,7 @@ import random
 from enum import Enum
 import sys
 from Discretizer import StreetFighter2Discretizer
+from myagent import DeepQAgent
 
 
 # too many player in lobby
@@ -51,30 +52,16 @@ class Lobby:
     JUMP_LAG = 4
 
     # time between 2 frame
-    # FRAME_RATE = 1 / 115  # The time between frames if real time is enabled
     FRAME_RATE = 1 / 300  # Slow enough for human viewing
 
     ### End of static variables
 
     ### Static Methods
 
-    # we load all state file
     def getStates():
-        """Static method that gets and returns a list of all the save state names that can be loaded
-
-        Parameters
-        ----------
-        None
-
-        ReturnsStreetFighter2Discretizer
-        -------
-        states
-            A list of strings where each string is the name of a different save state
-        """
-
+        """Static method that gets and returns a list of all the save state names that can be loaded"""
         directory = os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis")
 
-        # Make sure the directory exists
         if not os.path.exists(directory):
             os.makedirs(directory, exist_ok=True)
             print(f"Created directory: {directory}")
@@ -82,14 +69,11 @@ class Lobby:
 
         try:
             files = os.listdir(directory)
-            # Return just the state names without extension
             states = [
                 os.path.splitext(file)[0] for file in files if file.endswith(".state")
             ]
-
             if not states:
                 return []
-
             print(f"Found states: {states}")
             return states
         except Exception as e:
@@ -104,30 +88,13 @@ class Lobby:
         render=False,
         mode=Lobby_Modes.SINGLE_PLAYER,
     ):
-        """Initializes the agent and the underlying neural network
-
-        Parameters
-        ----------
-        game
-            A String of the game the lobby will be making an environment of, defaults to StreetFighterIISpecialChampionEdition-Genesis
-
-        render
-            A boolean flag that specifies whether or not to visually render the game while a match is being played
-
-        mode
-            An enum type that describes whether this lobby is for single player or two player matches
-
-        Returns
-        -------
-        None
-        """
+        """Initializes the agent and the underlying neural network"""
         self.game = game
         self.render = render
         self.mode = mode
         self.clearLobby()
         self.environment = None
 
-        # Define memory addresses directly in the class
         self.ram_info = {
             "continue_timer": {"address": 16744917, "type": "|u1"},
             "round_timer": {"address": 16750378, "type": ">u2"},
@@ -151,7 +118,6 @@ class Lobby:
             return info
 
         try:
-            # Get raw RAM from the unwrapped environment
             if hasattr(self.environment.unwrapped, "get_ram"):
                 ram = self.environment.unwrapped.get_ram()
             elif hasattr(self.environment.unwrapped, "em") and hasattr(
@@ -159,39 +125,31 @@ class Lobby:
             ):
                 ram = self.environment.unwrapped.em.get_ram()
             else:
-                # Can't access RAM, use default values
                 return self.ensureRequiredKeys(info)
 
             for key, address_info in self.ram_info.items():
                 addr = address_info["address"]
                 data_type = address_info["type"]
 
-                # Check if address is in valid range
                 if addr >= len(ram):
                     continue
 
                 try:
-                    # Extract value based on type
                     if data_type == "|u1":
-                        # Unsigned 1-byte
                         value = ram[addr]
                     elif data_type == ">u2":
-                        # Big-endian 2-byte unsigned int
                         if addr + 1 < len(ram):
                             value = (ram[addr] << 8) | ram[addr + 1]
                         else:
                             continue
                     elif data_type == ">i2":
-                        # Big-endian 2-byte signed int
                         if addr + 1 < len(ram):
                             value = (ram[addr] << 8) | ram[addr + 1]
-                            # Convert to signed if necessary
                             if value >= 32768:
                                 value -= 65536
                         else:
                             continue
                     elif data_type == ">u4":
-                        # Big-endian 4-byte unsigned int
                         if addr + 3 < len(ram):
                             value = (
                                 (ram[addr] << 24)
@@ -202,7 +160,6 @@ class Lobby:
                         else:
                             continue
                     elif data_type == ">d4":
-                        # Big-endian 4-byte decimal (assuming this is a float)
                         if addr + 3 < len(ram):
                             import struct
 
@@ -223,10 +180,8 @@ class Lobby:
                         else:
                             continue
                     else:
-                        # Default case
                         value = ram[addr]
 
-                    # Store in info dict
                     info[key] = value
                 except Exception as e:
                     print(f"Error reading RAM for {key}: {e}")
@@ -234,13 +189,11 @@ class Lobby:
         except Exception as e:
             print(f"Error reading RAM: {e}")
 
-        # Make sure all required keys exist
         return self.ensureRequiredKeys(info)
 
     def initEnvironment(self, state):
         print(f"Initializing environment with state: {state}")
         try:
-            # Close any existing environment to prevent multiple instances error
             if self.environment is not None:
                 try:
                     self.environment.close()
@@ -249,13 +202,9 @@ class Lobby:
                     print(f"Warning when closing environment: {close_error}")
                 self.environment = None
 
-            # Create environment without state first
             self.environment = retro.make(game=self.game, players=self.mode.value)
-
-            # Reset the environment
             self.environment.reset()
 
-            # Try to load the state from file
             state_path = os.path.join(
                 os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis"),
                 f"{state}.state",
@@ -266,22 +215,19 @@ class Lobby:
                 try:
                     with open(state_path, "rb") as f:
                         state_data = f.read()
-
                     self.environment.em.set_state(state_data)
                     print(f"Loaded state successfully")
                 except Exception as state_error:
                     print(f"Warning when loading state: {state_error}")
 
-            # Apply the discretizer
             self.environment = StreetFighter2Discretizer(self.environment)
             print("Applied StreetFighter2Discretizer")
 
-            # Take a step to get initial observation and info
             step_result = self.environment.step(Lobby.NO_ACTION)
-            if len(step_result) == 4:  # Old pattern
+            if len(step_result) == 4:
                 self.lastObservation, reward, done, self.lastInfo = step_result
                 self.done = done
-            else:  # New pattern with 5 returns
+            else:
                 self.lastObservation, reward, terminated, truncated, self.lastInfo = (
                     step_result
                 )
@@ -290,7 +236,6 @@ class Lobby:
             print("Environment stepped with NO_ACTION")
             print(f"Info keys available: {list(self.lastInfo.keys())}")
 
-            # Read RAM values to populate info dictionary
             self.lastInfo = self.read_ram_values(self.lastInfo)
 
             print(f"Info keys after RAM reading: {list(self.lastInfo.keys())}")
@@ -303,80 +248,40 @@ class Lobby:
             raise
 
     def addPlayer(self, newPlayer):
-        """Adds a new player to the player list of active players in this lobby
-           will throw a Lobby_Full_Exception if the lobby is full
-
-        Parameters
-        ----------
-        newPlayer
-            An agent object that will be added to the lobby and moves will be requested from when the lobby starts
-
-        Returns
-        -------
-        None
-        """
+        """Adds a new player to the player list of active players in this lobby"""
         for playerNum, player in enumerate(self.players):
             if player is None:
                 self.players[playerNum] = newPlayer
                 return
-
         raise Lobby_Full_Exception(
             "Lobby has already reached the maximum number of players"
         )
 
-    # clear players currently inside the lobby queue
     def clearLobby(self):
-        """Clears the players currently inside the lobby's play queue
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        None
-        """
+        """Clears the players currently inside the lobby's play queue"""
         self.players = [None] * self.mode.value
 
     def isActionableState(self, info, action=0):
-        """Determines if the Agent has control over the game in it's current state(the Agent is in hit stun, ending lag, etc.)
-
-        Parameters
-        ----------
-        info
-            The RAM info of the current game state the Agent is presented with as a dictionary of keyworded values from Data.json
-
-        action
-            The last action taken by the Agent
-
-        Returns
-        -------
-        isActionable
-            A boolean variable describing whether the Agent has control over the given state of the game
-        """
-        # Always return True to avoid problems with missing keys
+        """Determines if the Agent has control over the game in it's current state"""
         return True
 
     def play(self, state):
         """The Agent will load the specified save state and play through it until finished"""
         try:
             self.initEnvironment(state)
-            max_steps = 2000  # Increase from 500 to 2000
+            max_steps = 2000
             step_count = 0
 
             while not self.done and step_count < max_steps:
                 step_count += 1
 
-                # Get move from the agent
                 self.lastAction, self.frameInputs = self.players[0].getMove(
                     self.lastObservation, self.lastInfo
                 )
 
-                # Execute the move
                 self.lastReward = 0
                 info, obs = self.enterFrameInputs()
 
-                # Record step
                 self.players[0].recordStep(
                     (
                         self.lastObservation,
@@ -390,7 +295,6 @@ class Lobby:
                 )
                 self.lastObservation, self.lastInfo = [obs, info]
 
-                # Add verbose output to track game progress
                 if step_count % 100 == 0:
                     print(
                         f"Step {step_count}, Player health: {info['health']}, Enemy health: {info['enemy_health']}"
@@ -403,7 +307,6 @@ class Lobby:
             else:
                 print("Episode completed naturally")
 
-            # Close the environment
             if self.environment is not None:
                 try:
                     self.environment.close()
@@ -446,30 +349,15 @@ class Lobby:
         return info
 
     def enterFrameInputs(self):
-        """Enter each of the frame inputs in the input buffer inside the last action object supplied by the Agent
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        info
-            The ram information received from the emulator after the last frame input has been entered
-
-        obs
-            The image buffer data received from the emulator after entering all input frames
-        """
+        """Enter each of the frame inputs in the input buffer inside the last action object supplied by the Agent"""
         for frame in self.frameInputs:
-            # Handle both the old (4-return) and new (5-return) patterns
             step_result = self.environment.step(frame)
-            if len(step_result) == 4:  # old pattern
+            if len(step_result) == 4:
                 obs, tempReward, self.done, info = step_result
-            else:  # new pattern with 5 returns
+            else:
                 obs, tempReward, terminated, truncated, info = step_result
                 self.done = terminated or truncated
 
-            # Read RAM values to populate info dictionary
             info = self.read_ram_values(info)
 
             if self.done:
@@ -480,26 +368,8 @@ class Lobby:
             self.lastReward += tempReward
         return info, obs
 
-    # so we play each opponent in a state file
     def executeTrainingRun(self, review=True, episodes=1, background_training=True):
-        """The lobby will load each of the saved states to generate data for the agent to train on
-            Note: This will only work for single player mode
-
-        Parameters
-        ----------
-        review
-            A boolean variable that tells the Agent whether or not it should train after running through all the save states, true means train
-
-        episodes
-            An integer that represents the number of game play episodes to go through before training, once through the roster is one episode
-
-        background_training
-            If True, will train in the background while continuing to render gameplay
-
-        Returns
-        -------
-        None
-        """
+        """The lobby will load each of the saved states to generate data for the agent to train on"""
 
         def training_thread_function(agent):
             try:
@@ -512,30 +382,25 @@ class Lobby:
 
                 traceback.print_exc()
 
-        # Choose one random episode to display
         if background_training and episodes > 1:
             display_episode = random.randint(0, episodes - 1)
             print(f"Will render episode {display_episode} while training in background")
         else:
             display_episode = 0
 
-        # Save original render setting to restore after training specific episodes
         original_render = self.render
 
         for episodeNumber in range(episodes):
             print("Starting episode", episodeNumber)
 
-            # Only render the selected episode
             if background_training:
                 self.render = episodeNumber == display_episode
 
-            # Get available states
             states = Lobby.getStates()
 
             if not states:
                 print("No state files found. Creating a default state...")
                 try:
-                    # Try to create a default state
                     create_default_state()
                     states = ["default"]
                 except Exception as e:
@@ -548,11 +413,9 @@ class Lobby:
             for state in states:
                 print(f"Loading state: {state}")
                 try:
-                    # Play using the state name
                     self.play(state=state)
                 except Exception as e:
                     print(f"Error playing state {state}: {e}")
-                    # Make sure environment is closed
                     if self.environment is not None:
                         try:
                             self.environment.close()
@@ -561,7 +424,6 @@ class Lobby:
                             pass
                     continue
 
-            # After the first episode, if it's the one we're rendering, start background training
             if (
                 episodeNumber == display_episode
                 and background_training
@@ -573,15 +435,11 @@ class Lobby:
                 training_thread = threading.Thread(
                     target=training_thread_function, args=(self.players[0],)
                 )
-                training_thread.daemon = (
-                    True  # Make thread a daemon so it exits when main program exits
-                )
+                training_thread.daemon = True
                 training_thread.start()
 
-        # Restore original render setting
         self.render = original_render
 
-        # If not training in background, do it in the main thread
         if (
             not background_training
             and review
@@ -606,20 +464,16 @@ def create_default_state():
     state_path = os.path.join(state_dir, "default.state")
 
     try:
-        # Create the environment and get its state
         env = retro.make(game="StreetFighterIISpecialChampionEdition-Genesis")
         env.reset()
 
-        # Take a few steps to stabilize
         for _ in range(10):
             env.step([0] * len(env.buttons))
 
-        # Get and save the state
         state_data = env.em.get_state()
         with open(state_path, "wb") as f:
             f.write(state_data)
 
-        # Also save without extension for compatibility
         with open(os.path.join(state_dir, "default"), "wb") as f:
             f.write(state_data)
 
@@ -631,16 +485,47 @@ def create_default_state():
         return None
 
 
-# Makes an example lobby and has a random agent play through an example training run
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Run the Street Fighter II AI training lobby"
     )
     parser.add_argument(
-        "--render", action="store_true", help="Render the game visually"
+        "-r",
+        "--render",
+        action="store_true",
+        help="Boolean flag for if the user wants the game environment to render during play",
     )
     parser.add_argument(
-        "--episodes", type=int, default=1, help="Number of episodes to train"
+        "-l",
+        "--load",
+        action="store_true",
+        help="Boolean flag for if the user wants to load pre-existing weights",
+    )
+    parser.add_argument(
+        "-e",
+        "--episodes",
+        type=int,
+        default=10,
+        help="Integer representing the number of training rounds to go through, checkpoints are made at the end of each episode",
+    )
+    parser.add_argument(
+        "-n",
+        "--name",
+        type=str,
+        default=None,
+        help="Name of the instance that will be used when saving the model or its training logs",
+    )
+    parser.add_argument(
+        "-b",
+        "--background",
+        action="store_true",
+        help="Train in background while rendering a random episode",
+    )
+    parser.add_argument(
+        "-re",
+        "--resume",
+        action="store_true",
+        help="Boolean flag for loading a pre-existing model but with higher exploration for continued training",
     )
     parser.add_argument(
         "--create-state",
@@ -652,3 +537,16 @@ if __name__ == "__main__":
     if args.create_state:
         print("Creating default state...")
         create_default_state()
+
+    if args.load and not args.resume:
+        agent = DeepQAgent(load=True, name=args.name)
+    elif args.resume:
+        agent = DeepQAgent(load=True, resume=True, name=args.name)
+    else:
+        agent = DeepQAgent(load=False, name=args.name)
+
+    lobby = Lobby(render=args.render)
+    lobby.addPlayer(agent)
+    lobby.executeTrainingRun(
+        episodes=args.episodes, background_training=args.background
+    )

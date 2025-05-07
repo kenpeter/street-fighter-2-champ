@@ -11,11 +11,9 @@ python -m retro.import .
 
 
 
-python DeepQAgent.py --episodes 10 --background -l
 
 
-
-python myagent.py --episodes 10 --background --resume
+python Lobby.py --episodes 2 --background --resume
 
 
 
