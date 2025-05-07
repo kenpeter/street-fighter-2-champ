@@ -12,6 +12,18 @@ import keras.losses
 from DefaultMoveList import Moves
 from LossHistory import LossHistory
 
+# Enable GPU memory growth to avoid allocating all GPU memory at once
+physical_devices = tf.config.list_physical_devices('GPU')
+if len(physical_devices) > 0:
+    try:
+        # Allow TensorFlow to allocate only as much GPU memory as needed
+        print(f"Found {len(physical_devices)} GPU(s). Enabling memory growth.")
+        for device in physical_devices:
+            tf.config.experimental.set_memory_growth(device, True)
+        print("GPU memory growth enabled.")
+    except Exception as e:
+        print(f"Error configuring GPU: {e}")
+
 
 class Agent:
     OBSERVATION_INDEX = 0
@@ -195,23 +207,25 @@ class DeepQAgent(Agent):
             return move, frameInputs
         else:
             stateData = self.prepareNetworkInputs(info)
-            predictedRewards = self.model.predict(stateData)[0]
+            with tf.device('/GPU:0'):
+                predictedRewards = self.model.predict(stateData)[0]
             move = np.argmax(predictedRewards)
             frameInputs = self.convertMoveToFrameInputs(list(self.moveList)[move], info)
             return move, frameInputs
 
     def initializeNetwork(self):
-        model = Sequential()
-        model.add(Dense(48, input_dim=self.stateSize, activation="relu"))
-        model.add(Dense(96, activation="relu"))
-        model.add(Dense(192, activation="relu"))
-        model.add(Dense(96, activation="relu"))
-        model.add(Dense(48, activation="relu"))
-        model.add(Dense(self.actionSize, activation="linear"))
-        model.compile(
-            loss=DeepQAgent._huber_loss, optimizer=Adam(learning_rate=self.learningRate)
-        )
-        print("Successfully initialized model")
+        with tf.device('/GPU:0'):
+            model = Sequential()
+            model.add(Dense(48, input_dim=self.stateSize, activation="relu"))
+            model.add(Dense(96, activation="relu"))
+            model.add(Dense(192, activation="relu"))
+            model.add(Dense(96, activation="relu"))
+            model.add(Dense(48, activation="relu"))
+            model.add(Dense(self.actionSize, activation="linear"))
+            model.compile(
+                loss=DeepQAgent._huber_loss, optimizer=Adam(learning_rate=self.learningRate)
+            )
+        print("Successfully initialized model on GPU")
         return model
 
     def prepareMemoryForTraining(self, memory):
@@ -256,18 +270,20 @@ class DeepQAgent(Agent):
         self.lossHistory.losses_clear()
         batch_count = 0
         max_batches = 20
-        for state, action, reward, done, next_state in minibatch:
-            if batch_count >= max_batches:
-                break
-            modelOutput = model.predict(state)[0]
-            if not done:
-                reward = reward + self.gamma * np.amax(model.predict(next_state)[0])
-            modelOutput[action] = reward
-            modelOutput = np.reshape(modelOutput, [1, self.actionSize])
-            model.fit(
-                state, modelOutput, epochs=1, verbose=0, callbacks=[self.lossHistory]
-            )
-            batch_count += 1
+        # Use GPU for training
+        with tf.device('/GPU:0'):
+            for state, action, reward, done, next_state in minibatch:
+                if batch_count >= max_batches:
+                    break
+                modelOutput = model.predict(state)[0]
+                if not done:
+                    reward = reward + self.gamma * np.amax(model.predict(next_state)[0])
+                modelOutput[action] = reward
+                modelOutput = np.reshape(modelOutput, [1, self.actionSize])
+                model.fit(
+                    state, modelOutput, epochs=1, verbose=0, callbacks=[self.lossHistory]
+                )
+                batch_count += 1
         if self.epsilon > DeepQAgent.EPSILON_MIN:
             self.epsilon *= self.epsilonDecay
         return model
@@ -276,3 +292,8 @@ class DeepQAgent(Agent):
 from keras.utils import get_custom_objects
 
 get_custom_objects().update({"_huber_loss": DeepQAgent._huber_loss})
+
+# Print TensorFlow GPU info
+print("TensorFlow version:", tf.__version__)
+print("Is GPU available:", tf.config.list_physical_devices('GPU'))
+print("Devices:", tf.config.list_logical_devices())

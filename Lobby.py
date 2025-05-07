@@ -2,8 +2,33 @@ import argparse, retro, os, time
 import random
 from enum import Enum
 import sys
+import tensorflow as tf
 from Discretizer import StreetFighter2Discretizer
 from myagent import DeepQAgent
+
+# Configure TensorFlow to use GPU
+physical_devices = tf.config.list_physical_devices('GPU')
+if len(physical_devices) > 0:
+    try:
+        # Allow TensorFlow to allocate only as much GPU memory as needed
+        print(f"Found {len(physical_devices)} GPU(s). Enabling memory growth.")
+        for device in physical_devices:
+            tf.config.experimental.set_memory_growth(device, True)
+        print("GPU memory growth enabled.")
+        
+        # Set the visible device to ensure TensorFlow uses GPU
+        tf.config.set_visible_devices(physical_devices[0], 'GPU')
+        print(f"Set visible GPU device: {physical_devices[0].name}")
+        
+        # Optional: Set additional GPU memory options if needed
+        # tf.config.experimental.set_virtual_device_configuration(
+        #     physical_devices[0],
+        #     [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=4096)]  # Limit GPU memory to 4GB
+        # )
+    except Exception as e:
+        print(f"Error configuring GPU: {e}")
+else:
+    print("No GPU found. Will use CPU instead.")
 
 
 # too many player in lobby
@@ -275,9 +300,16 @@ class Lobby:
             while not self.done and step_count < max_steps:
                 step_count += 1
 
-                self.lastAction, self.frameInputs = self.players[0].getMove(
-                    self.lastObservation, self.lastInfo
-                )
+                # Wrap prediction in GPU context if GPU is available
+                if len(physical_devices) > 0:
+                    with tf.device('/GPU:0'):
+                        self.lastAction, self.frameInputs = self.players[0].getMove(
+                            self.lastObservation, self.lastInfo
+                        )
+                else:
+                    self.lastAction, self.frameInputs = self.players[0].getMove(
+                        self.lastObservation, self.lastInfo
+                    )
 
                 self.lastReward = 0
                 info, obs = self.enterFrameInputs()
@@ -374,7 +406,13 @@ class Lobby:
         def training_thread_function(agent):
             try:
                 print("Starting training in background thread...")
-                agent.reviewFight()
+                # Ensure background training uses GPU if available
+                if len(physical_devices) > 0:
+                    print("Using GPU for background training")
+                    with tf.device('/GPU:0'):
+                        agent.reviewFight()
+                else:
+                    agent.reviewFight()
                 print("Background training completed!")
             except Exception as e:
                 print(f"Error during background training: {e}")
@@ -447,7 +485,13 @@ class Lobby:
         ):
             try:
                 print("Starting review process...")
-                self.players[0].reviewFight()
+                # Use GPU for training if available
+                if len(physical_devices) > 0:
+                    print("Using GPU for review...")
+                    with tf.device('/GPU:0'):
+                        self.players[0].reviewFight()
+                else:
+                    self.players[0].reviewFight()
                 print("Review completed")
             except Exception as e:
                 print(f"Error during review: {e}")
@@ -486,8 +530,12 @@ def create_default_state():
 
 
 if __name__ == "__main__":
+    # Print CUDA information before starting
+    print("TensorFlow version:", tf.__version__)
+    print("GPU devices:", tf.config.list_physical_devices('GPU'))
+    
     parser = argparse.ArgumentParser(
-        description="Run the Street Fighter II AI training lobby"
+        description="Run the Street Fighter II AI training lobby with CUDA support"
     )
     parser.add_argument(
         "-r",
@@ -532,8 +580,18 @@ if __name__ == "__main__":
         action="store_true",
         help="Create a default state before running",
     )
+    parser.add_argument(
+        "--disable-gpu",
+        action="store_true",
+        help="Disable GPU usage even if available",
+    )
     args = parser.parse_args()
-
+    
+    # Handle GPU disable option
+    if args.disable_gpu and len(physical_devices) > 0:
+        print("GPU usage manually disabled")
+        tf.config.set_visible_devices([], 'GPU')
+        
     if args.create_state:
         print("Creating default state...")
         create_default_state()
