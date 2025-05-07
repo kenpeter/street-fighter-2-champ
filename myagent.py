@@ -285,6 +285,7 @@ class DeepQAgent(Agent):
                 )
                 batch_count += 1
         if self.epsilon > DeepQAgent.EPSILON_MIN:
+            # so we will graduately stop learning new
             self.epsilon *= self.epsilonDecay
         return model
 
