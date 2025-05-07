@@ -12,17 +12,27 @@ import keras.losses
 from DefaultMoveList import Moves
 from LossHistory import LossHistory
 
-# Enable GPU memory growth to avoid allocating all GPU memory at once
-physical_devices = tf.config.list_physical_devices('GPU')
+# Print TensorFlow and GPU information for debugging
+print("TensorFlow version:", tf.__version__)
+print("Is GPU available:", bool(tf.config.list_physical_devices("GPU")))
+
+# Configure TensorFlow for GPU memory growth
+# This prevents TensorFlow from allocating all GPU memory at once
+physical_devices = tf.config.list_physical_devices("GPU")
 if len(physical_devices) > 0:
     try:
-        # Allow TensorFlow to allocate only as much GPU memory as needed
         print(f"Found {len(physical_devices)} GPU(s). Enabling memory growth.")
         for device in physical_devices:
             tf.config.experimental.set_memory_growth(device, True)
-        print("GPU memory growth enabled.")
+        print("GPU memory growth enabled. Device list:", physical_devices)
+
+        # Optional: Set visible devices if you have multiple GPUs
+        # tf.config.set_visible_devices([physical_devices[0]], 'GPU')
     except Exception as e:
         print(f"Error configuring GPU: {e}")
+else:
+    print("No GPU devices found. Training will be slow on CPU only.")
+    print("Make sure NVIDIA drivers and CUDA are properly installed.")
 
 
 class Agent:
@@ -207,14 +217,35 @@ class DeepQAgent(Agent):
             return move, frameInputs
         else:
             stateData = self.prepareNetworkInputs(info)
-            with tf.device('/GPU:0'):
+
+            # Use GPU if available - using tf.device context
+            if len(tf.config.list_physical_devices("GPU")) > 0:
+                with tf.device("/GPU:0"):
+                    predictedRewards = self.model.predict(stateData)[0]
+            else:
                 predictedRewards = self.model.predict(stateData)[0]
+
             move = np.argmax(predictedRewards)
             frameInputs = self.convertMoveToFrameInputs(list(self.moveList)[move], info)
             return move, frameInputs
 
     def initializeNetwork(self):
-        with tf.device('/GPU:0'):
+        # Use GPU if available - using tf.device context
+        if len(tf.config.list_physical_devices("GPU")) > 0:
+            with tf.device("/GPU:0"):
+                model = Sequential()
+                model.add(Dense(48, input_dim=self.stateSize, activation="relu"))
+                model.add(Dense(96, activation="relu"))
+                model.add(Dense(192, activation="relu"))
+                model.add(Dense(96, activation="relu"))
+                model.add(Dense(48, activation="relu"))
+                model.add(Dense(self.actionSize, activation="linear"))
+                model.compile(
+                    loss=DeepQAgent._huber_loss,
+                    optimizer=Adam(learning_rate=self.learningRate),
+                )
+                print("Successfully initialized model on GPU")
+        else:
             model = Sequential()
             model.add(Dense(48, input_dim=self.stateSize, activation="relu"))
             model.add(Dense(96, activation="relu"))
@@ -223,9 +254,11 @@ class DeepQAgent(Agent):
             model.add(Dense(48, activation="relu"))
             model.add(Dense(self.actionSize, activation="linear"))
             model.compile(
-                loss=DeepQAgent._huber_loss, optimizer=Adam(learning_rate=self.learningRate)
+                loss=DeepQAgent._huber_loss,
+                optimizer=Adam(learning_rate=self.learningRate),
             )
-        print("Successfully initialized model on GPU")
+            print("Successfully initialized model on CPU")
+
         return model
 
     def prepareMemoryForTraining(self, memory):
@@ -270,8 +303,31 @@ class DeepQAgent(Agent):
         self.lossHistory.losses_clear()
         batch_count = 0
         max_batches = 20
-        # Use GPU for training
-        with tf.device('/GPU:0'):
+
+        # Use GPU if available for training
+        if len(tf.config.list_physical_devices("GPU")) > 0:
+            print("Training network on GPU...")
+            with tf.device("/GPU:0"):
+                for state, action, reward, done, next_state in minibatch:
+                    if batch_count >= max_batches:
+                        break
+                    modelOutput = model.predict(state)[0]
+                    if not done:
+                        reward = reward + self.gamma * np.amax(
+                            model.predict(next_state)[0]
+                        )
+                    modelOutput[action] = reward
+                    modelOutput = np.reshape(modelOutput, [1, self.actionSize])
+                    model.fit(
+                        state,
+                        modelOutput,
+                        epochs=1,
+                        verbose=0,
+                        callbacks=[self.lossHistory],
+                    )
+                    batch_count += 1
+        else:
+            print("Training network on CPU...")
             for state, action, reward, done, next_state in minibatch:
                 if batch_count >= max_batches:
                     break
@@ -281,20 +337,32 @@ class DeepQAgent(Agent):
                 modelOutput[action] = reward
                 modelOutput = np.reshape(modelOutput, [1, self.actionSize])
                 model.fit(
-                    state, modelOutput, epochs=1, verbose=0, callbacks=[self.lossHistory]
+                    state,
+                    modelOutput,
+                    epochs=1,
+                    verbose=0,
+                    callbacks=[self.lossHistory],
                 )
                 batch_count += 1
+
         if self.epsilon > DeepQAgent.EPSILON_MIN:
-            # so we will graduately stop learning new
             self.epsilon *= self.epsilonDecay
         return model
 
 
+# Register the custom loss function
 from keras.utils import get_custom_objects
 
 get_custom_objects().update({"_huber_loss": DeepQAgent._huber_loss})
 
-# Print TensorFlow GPU info
+# Print TensorFlow GPU information at module load time
+print("\nGPU configuration summary:")
+print("==========================")
 print("TensorFlow version:", tf.__version__)
-print("Is GPU available:", tf.config.list_physical_devices('GPU'))
-print("Devices:", tf.config.list_logical_devices())
+print("CUDA available:", tf.test.is_built_with_cuda())
+print("GPU devices:", tf.config.list_physical_devices("GPU"))
+if len(tf.config.list_physical_devices("GPU")) > 0:
+    print("GPU device name:", tf.test.gpu_device_name())
+else:
+    print("No GPU found. Using CPU only.")
+print("==========================\n")
