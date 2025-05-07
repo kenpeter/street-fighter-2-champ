@@ -169,6 +169,8 @@ class Agent:
             Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_stats.json"
         )
 
+        self.loaded_stats = False  # Track if we loaded stats
+
         if os.path.exists(stats_path):
             try:
                 with open(stats_path, "r") as file:
@@ -177,6 +179,7 @@ class Agent:
                     self.episodes_completed = stats.get("episodes_completed", 0)
                     self.avg_reward_history = stats.get("avg_reward_history", [])
                     self.avg_loss_history = stats.get("avg_loss_history", [])
+                    self.loaded_stats = True  # Mark that we loaded stats
                     print(
                         f"Loaded training stats: {self.total_timesteps} timesteps completed over {self.episodes_completed} episodes"
                     )

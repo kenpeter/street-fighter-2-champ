@@ -123,6 +123,9 @@ class Lobby:
             "losses": 0,
             "episode_rewards": [],
             "avg_training_loss": [],
+            "session_start_time": time.time(),
+            "session_wins": 0,
+            "session_losses": 0,
         }
 
         self.ram_info = {
@@ -355,9 +358,11 @@ class Lobby:
             # Determine win/loss by comparing health
             if self.lastInfo.get("health", 0) > self.lastInfo.get("enemy_health", 0):
                 self.training_stats["wins"] += 1
+                self.training_stats["session_wins"] += 1
                 print("Episode result: WIN")
             else:
                 self.training_stats["losses"] += 1
+                self.training_stats["session_losses"] += 1
                 print("Episode result: LOSS")
 
             print(f"Episode steps: {self.episode_steps}")
@@ -551,9 +556,59 @@ class Lobby:
         print("\n========= TRAINING SESSION SUMMARY =========")
         print(f"Total training steps: {self.training_stats['total_steps']}")
         print(f"Total episodes: {self.training_stats['episodes_run']}")
+
+        # Overall win/loss record
         print(
-            f"Win rate: {win_rate:.2f}% ({self.training_stats['wins']}/{self.training_stats['episodes_run']})"
+            f"Total Win/Loss Record: {self.training_stats['wins']}W - {self.training_stats['losses']}L ({win_rate:.2f}%)"
         )
+
+        # Current session win/loss record
+        session_win_rate = (
+            (self.training_stats["session_wins"] / episodes) * 100
+            if episodes > 0
+            else 0
+        )
+        print(
+            f"Current session record: {self.training_stats['session_wins']}W - {self.training_stats['session_losses']}L ({session_win_rate:.2f}%)"
+        )
+
+        # Track progress of win rate over time
+        if hasattr(self.players[0], "loaded_stats") and self.players[0].loaded_stats:
+            previous_wins = (
+                self.training_stats["wins"] - self.training_stats["session_wins"]
+            )
+            previous_losses = (
+                self.training_stats["losses"] - self.training_stats["session_losses"]
+            )
+            previous_episodes = self.training_stats["episodes_run"] - episodes
+
+            if previous_episodes > 0:
+                previous_win_rate = (previous_wins / previous_episodes) * 100
+                win_rate_change = session_win_rate - previous_win_rate
+                print(
+                    f"Win rate change: {win_rate_change:+.2f}% (Previous: {previous_win_rate:.2f}%)"
+                )
+
+                if win_rate_change > 5:
+                    print("Performance trend: STRONG IMPROVEMENT")
+                elif win_rate_change > 0:
+                    print("Performance trend: SLIGHT IMPROVEMENT")
+                elif win_rate_change > -5:
+                    print("Performance trend: STABLE")
+                else:
+                    print("Performance trend: DECLINING")
+
+        # Track if we used resume flag to accumulate stats
+        accumulated_stats = "No"
+        if hasattr(self.players[0], "total_timesteps"):
+            # Check if we're accumulating (resumed) or starting fresh
+            if (
+                hasattr(self.players[0], "loaded_stats")
+                and self.players[0].loaded_stats
+            ):
+                accumulated_stats = "Yes (--resume)"
+
+        print(f"Accumulated stats: {accumulated_stats}")
         print(f"Total training time: {total_time:.2f} seconds")
 
         # Calculate steps per second
