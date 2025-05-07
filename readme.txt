@@ -13,19 +13,7 @@ python -m retro.import .
 
 
 
-python Lobby.py --episodes 2 --background --resume
-
-
-
-# Install Docker and NVIDIA Container Toolkit
-chmod +x setup_tensorflow_cuda.sh
-./setup_tensorflow_cuda.sh
-
-# Build Docker image
-docker build -t street-fighter-ai .
-
-# Run training with GPU support
-docker run --gpus all street-fighter-ai -e 20 -b
+python Lobby.py --episodes 20 --background --resume
 
 
 

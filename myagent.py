@@ -11,6 +11,8 @@ from keras import backend as K
 import keras.losses
 from DefaultMoveList import Moves
 from LossHistory import LossHistory
+import json
+import time
 
 # Print TensorFlow and GPU information for debugging
 print("TensorFlow version:", tf.__version__)
@@ -46,6 +48,7 @@ class Agent:
     MAX_DATA_LENGTH = 50000
     DEFAULT_MODELS_DIR_PATH = "../models"
     DEFAULT_LOGS_DIR_PATH = "../logs"
+    DEFAULT_STATS_DIR_PATH = "../stats"
 
     def __init__(self, load=False, name=None, moveList=Moves):
         if name is None:
@@ -54,13 +57,24 @@ class Agent:
             self.name = name
         self.prepareForNextFight()
         self.moveList = moveList
+
+        # Initialize training stats
+        self.total_timesteps = 0
+        self.episodes_completed = 0
+        self.training_start_time = time.time()
+        self.avg_reward_history = []
+        self.avg_loss_history = []
+
         if self.__class__.__name__ != "Agent":
             self.model = self.initializeNetwork()
             if load:
                 self.loadModel()
+                # Load training stats if resuming
+                self.loadStats()
 
     def prepareForNextFight(self):
         self.memory = deque(maxlen=Agent.MAX_DATA_LENGTH)
+        self.episode_rewards = []
 
     def getRandomMove(self, info):
         moveName = random.choice(list(self.moveList))
@@ -94,11 +108,43 @@ class Agent:
 
     def recordStep(self, step):
         self.memory.append(step)
+        # Increment timestep counter
+        self.total_timesteps += 1
+        # Record reward for metrics
+        self.episode_rewards.append(step[Agent.REWARD_INDEX])
+
+    def updateEpisodeMetrics(self):
+        """Update metrics at the end of an episode"""
+        self.episodes_completed += 1
+        if self.episode_rewards:
+            avg_reward = sum(self.episode_rewards) / len(self.episode_rewards)
+            self.avg_reward_history.append(avg_reward)
+            self.episode_rewards = []
 
     def reviewFight(self):
+        """Train the model and update stats after an episode"""
         data = self.prepareMemoryForTraining(self.memory)
         self.model = self.trainNetwork(data, self.model)
+
+        # Update episode metrics
+        self.updateEpisodeMetrics()
+
+        # Record average loss if available
+        if (
+            hasattr(self, "lossHistory")
+            and hasattr(self.lossHistory, "losses")
+            and len(self.lossHistory.losses) > 0
+        ):
+            avg_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
+            self.avg_loss_history.append(avg_loss)
+
+        # Save model and stats
         self.saveModel()
+        self.saveStats()
+
+        # Print progress metrics
+        self.printTrainingProgress()
+
         self.prepareForNextFight()
 
     def loadModel(self):
@@ -115,6 +161,30 @@ class Agent:
                     print(f"Error loading model: {e}")
         print(f"No valid model file found at {model_path}[.keras/.weights.h5/.h5]")
         print("Starting with a new model.")
+
+    def loadStats(self):
+        """Load training statistics from file"""
+        os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
+        stats_path = os.path.join(
+            Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_stats.json"
+        )
+
+        if os.path.exists(stats_path):
+            try:
+                with open(stats_path, "r") as file:
+                    stats = json.load(file)
+                    self.total_timesteps = stats.get("total_timesteps", 0)
+                    self.episodes_completed = stats.get("episodes_completed", 0)
+                    self.avg_reward_history = stats.get("avg_reward_history", [])
+                    self.avg_loss_history = stats.get("avg_loss_history", [])
+                    print(
+                        f"Loaded training stats: {self.total_timesteps} timesteps completed over {self.episodes_completed} episodes"
+                    )
+            except Exception as e:
+                print(f"Error loading stats: {e}")
+                print("Starting with fresh training statistics.")
+        else:
+            print("No previous training stats found. Starting fresh.")
 
     def saveModel(self):
         os.makedirs(Agent.DEFAULT_MODELS_DIR_PATH, exist_ok=True)
@@ -136,6 +206,116 @@ class Agent:
                     str(sum(self.lossHistory.losses) / len(self.lossHistory.losses))
                 )
                 file.write("\n")
+
+    def saveStats(self):
+        """Save training statistics to file"""
+        os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
+        stats_path = os.path.join(
+            Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_stats.json"
+        )
+
+        stats = {
+            "total_timesteps": self.total_timesteps,
+            "episodes_completed": self.episodes_completed,
+            "avg_reward_history": self.avg_reward_history,
+            "avg_loss_history": self.avg_loss_history,
+        }
+
+        try:
+            with open(stats_path, "w") as file:
+                json.dump(stats, file)
+        except Exception as e:
+            print(f"Error saving stats: {e}")
+
+    def printTrainingProgress(self):
+        """Print current training progress metrics"""
+        elapsed_time = time.time() - self.training_start_time
+
+        print("\n==== Training Progress ====")
+        print(f"Total timesteps: {self.total_timesteps}")
+        print(f"Episodes completed: {self.episodes_completed}")
+        print(f"Training time: {elapsed_time:.2f} seconds")
+
+        if self.avg_reward_history:
+            print(f"Recent average reward: {self.avg_reward_history[-1]:.4f}")
+            if len(self.avg_reward_history) >= 2:
+                reward_change = (
+                    self.avg_reward_history[-1] - self.avg_reward_history[-2]
+                )
+                print(f"Reward change: {reward_change:+.4f}")
+
+        if (
+            hasattr(self, "lossHistory")
+            and hasattr(self.lossHistory, "losses")
+            and len(self.lossHistory.losses) > 0
+        ):
+            recent_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
+            print(f"Recent loss: {recent_loss:.6f}")
+
+            if self.avg_loss_history and len(self.avg_loss_history) >= 2:
+                loss_change = self.avg_loss_history[-1] - self.avg_loss_history[-2]
+                print(f"Loss change: {loss_change:+.6f}")
+
+                # Check if we're making progress or stuck
+                if abs(loss_change) < 0.0001 and self.episodes_completed > 5:
+                    print(
+                        "WARNING: Training may be stuck in a local minimum - loss is not changing significantly"
+                    )
+                elif loss_change < 0:
+                    print("Learning progress: Positive (loss is decreasing)")
+                else:
+                    print(
+                        "Learning progress: Negative or stalled (loss is not decreasing)"
+                    )
+
+        print("===========================\n")
+
+    def printFinalStats(self):
+        """Print final training statistics"""
+        elapsed_time = time.time() - self.training_start_time
+
+        print("\n======= TRAINING SUMMARY =======")
+        print(f"Total training timesteps: {self.total_timesteps}")
+        print(f"Total episodes completed: {self.episodes_completed}")
+        print(f"Total training time: {elapsed_time:.2f} seconds")
+
+        if self.avg_reward_history:
+            print(f"Final average reward: {self.avg_reward_history[-1]:.4f}")
+            if len(self.avg_reward_history) > 1:
+                first_rewards = sum(self.avg_reward_history[:3]) / min(
+                    3, len(self.avg_reward_history)
+                )
+                last_rewards = sum(self.avg_reward_history[-3:]) / min(
+                    3, len(self.avg_reward_history)
+                )
+                reward_improvement = last_rewards - first_rewards
+                print(f"Reward improvement: {reward_improvement:+.4f}")
+
+        if self.avg_loss_history:
+            print(f"Final average loss: {self.avg_loss_history[-1]:.6f}")
+            if len(self.avg_loss_history) > 1:
+                first_losses = sum(self.avg_loss_history[:3]) / min(
+                    3, len(self.avg_loss_history)
+                )
+                last_losses = sum(self.avg_loss_history[-3:]) / min(
+                    3, len(self.avg_loss_history)
+                )
+                loss_improvement = first_losses - last_losses
+
+                print(f"Loss improvement: {loss_improvement:+.6f}")
+
+                if loss_improvement > 0:
+                    learning_status = "POSITIVE - Agent is learning effectively"
+                elif loss_improvement > -0.001:
+                    learning_status = "NEUTRAL - Small improvements in learning"
+                else:
+                    learning_status = (
+                        "NEGATIVE - Agent may be stuck in suboptimal policy"
+                    )
+
+                print(f"Learning status: {learning_status}")
+
+        print("=================================\n")
 
     def getModelName(self):
         return self.name + "Model"

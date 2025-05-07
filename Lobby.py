@@ -7,7 +7,7 @@ from Discretizer import StreetFighter2Discretizer
 from myagent import DeepQAgent
 
 # Configure TensorFlow to use GPU
-physical_devices = tf.config.list_physical_devices('GPU')
+physical_devices = tf.config.list_physical_devices("GPU")
 if len(physical_devices) > 0:
     try:
         # Allow TensorFlow to allocate only as much GPU memory as needed
@@ -15,16 +15,11 @@ if len(physical_devices) > 0:
         for device in physical_devices:
             tf.config.experimental.set_memory_growth(device, True)
         print("GPU memory growth enabled.")
-        
+
         # Set the visible device to ensure TensorFlow uses GPU
-        tf.config.set_visible_devices(physical_devices[0], 'GPU')
+        tf.config.set_visible_devices(physical_devices[0], "GPU")
         print(f"Set visible GPU device: {physical_devices[0].name}")
-        
-        # Optional: Set additional GPU memory options if needed
-        # tf.config.experimental.set_virtual_device_configuration(
-        #     physical_devices[0],
-        #     [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=4096)]  # Limit GPU memory to 4GB
-        # )
+
     except Exception as e:
         print(f"Error configuring GPU: {e}")
 else:
@@ -119,6 +114,16 @@ class Lobby:
         self.mode = mode
         self.clearLobby()
         self.environment = None
+
+        # Initialize training statistics
+        self.training_stats = {
+            "episodes_run": 0,
+            "total_steps": 0,
+            "wins": 0,
+            "losses": 0,
+            "episode_rewards": [],
+            "avg_training_loss": [],
+        }
 
         self.ram_info = {
             "continue_timer": {"address": 16744917, "type": "|u1"},
@@ -268,6 +273,12 @@ class Lobby:
             self.lastAction, self.frameInputs = 0, [Lobby.NO_ACTION]
             self.currentJumpFrame = 0
 
+            # Initialize episode-specific metrics
+            self.episode_steps = 0
+            self.episode_reward = 0
+            self.initial_health = self.lastInfo.get("health", 100)
+            self.initial_enemy_health = self.lastInfo.get("enemy_health", 100)
+
         except Exception as e:
             print(f"Error initializing environment: {e}")
             raise
@@ -299,10 +310,12 @@ class Lobby:
 
             while not self.done and step_count < max_steps:
                 step_count += 1
+                self.episode_steps += 1
+                self.training_stats["total_steps"] += 1
 
                 # Wrap prediction in GPU context if GPU is available
                 if len(physical_devices) > 0:
-                    with tf.device('/GPU:0'):
+                    with tf.device("/GPU:0"):
                         self.lastAction, self.frameInputs = self.players[0].getMove(
                             self.lastObservation, self.lastInfo
                         )
@@ -313,6 +326,9 @@ class Lobby:
 
                 self.lastReward = 0
                 info, obs = self.enterFrameInputs()
+
+                # Track episode reward
+                self.episode_reward += self.lastReward
 
                 self.players[0].recordStep(
                     (
@@ -331,6 +347,22 @@ class Lobby:
                     print(
                         f"Step {step_count}, Player health: {info['health']}, Enemy health: {info['enemy_health']}"
                     )
+
+            # Update episode statistics
+            self.training_stats["episodes_run"] += 1
+            self.training_stats["episode_rewards"].append(self.episode_reward)
+
+            # Determine win/loss by comparing health
+            if self.lastInfo.get("health", 0) > self.lastInfo.get("enemy_health", 0):
+                self.training_stats["wins"] += 1
+                print("Episode result: WIN")
+            else:
+                self.training_stats["losses"] += 1
+                print("Episode result: LOSS")
+
+            print(f"Episode steps: {self.episode_steps}")
+            print(f"Episode reward: {self.episode_reward}")
+            print(f"Total steps so far: {self.training_stats['total_steps']}")
 
             if step_count >= max_steps:
                 print(
@@ -402,6 +434,7 @@ class Lobby:
 
     def executeTrainingRun(self, review=True, episodes=1, background_training=True):
         """The lobby will load each of the saved states to generate data for the agent to train on"""
+        start_time = time.time()
 
         def training_thread_function(agent):
             try:
@@ -409,7 +442,7 @@ class Lobby:
                 # Ensure background training uses GPU if available
                 if len(physical_devices) > 0:
                     print("Using GPU for background training")
-                    with tf.device('/GPU:0'):
+                    with tf.device("/GPU:0"):
                         agent.reviewFight()
                 else:
                     agent.reviewFight()
@@ -429,7 +462,7 @@ class Lobby:
         original_render = self.render
 
         for episodeNumber in range(episodes):
-            print("Starting episode", episodeNumber)
+            print(f"\n=== Starting episode {episodeNumber+1}/{episodes} ===")
 
             if background_training:
                 self.render = episodeNumber == display_episode
@@ -447,6 +480,10 @@ class Lobby:
                         "Please create at least one state file before running training."
                     )
                     return
+
+            # Reset episode-specific metrics
+            self.episode_steps = 0
+            self.episode_reward = 0
 
             for state in states:
                 print(f"Loading state: {state}")
@@ -488,7 +525,7 @@ class Lobby:
                 # Use GPU for training if available
                 if len(physical_devices) > 0:
                     print("Using GPU for review...")
-                    with tf.device('/GPU:0'):
+                    with tf.device("/GPU:0"):
                         self.players[0].reviewFight()
                 else:
                     self.players[0].reviewFight()
@@ -498,6 +535,63 @@ class Lobby:
                 import traceback
 
                 traceback.print_exc()
+
+        # Print final training summary
+        if hasattr(self.players[0], "printFinalStats"):
+            self.players[0].printFinalStats()
+
+        # Print lobby training statistics
+        total_time = time.time() - start_time
+        win_rate = (
+            (self.training_stats["wins"] / self.training_stats["episodes_run"]) * 100
+            if self.training_stats["episodes_run"] > 0
+            else 0
+        )
+
+        print("\n========= TRAINING SESSION SUMMARY =========")
+        print(f"Total training steps: {self.training_stats['total_steps']}")
+        print(f"Total episodes: {self.training_stats['episodes_run']}")
+        print(
+            f"Win rate: {win_rate:.2f}% ({self.training_stats['wins']}/{self.training_stats['episodes_run']})"
+        )
+        print(f"Total training time: {total_time:.2f} seconds")
+
+        # Calculate steps per second
+        steps_per_second = (
+            self.training_stats["total_steps"] / total_time if total_time > 0 else 0
+        )
+        print(f"Training efficiency: {steps_per_second:.2f} steps/second")
+
+        if hasattr(self.players[0], "total_timesteps"):
+            print(
+                f"Agent's accumulated training timesteps: {self.players[0].total_timesteps}"
+            )
+
+        # Calculate average reward trend
+        if len(self.training_stats["episode_rewards"]) >= 2:
+            first_rewards = sum(
+                self.training_stats["episode_rewards"][
+                    : min(3, len(self.training_stats["episode_rewards"]))
+                ]
+            ) / min(3, len(self.training_stats["episode_rewards"]))
+            last_rewards = sum(
+                self.training_stats["episode_rewards"][
+                    -min(3, len(self.training_stats["episode_rewards"])) :
+                ]
+            ) / min(3, len(self.training_stats["episode_rewards"]))
+            reward_trend = last_rewards - first_rewards
+            print(f"Reward trend: {reward_trend:+.2f}")
+
+            if reward_trend > 0:
+                print("Learning assessment: POSITIVE - Agent is improving")
+            elif reward_trend > -1:
+                print("Learning assessment: NEUTRAL - Agent performance is stable")
+            else:
+                print(
+                    "Learning assessment: NEGATIVE - Agent may be stuck in suboptimal policy"
+                )
+
+        print("===========================================")
 
 
 def create_default_state():
@@ -532,8 +626,8 @@ def create_default_state():
 if __name__ == "__main__":
     # Print CUDA information before starting
     print("TensorFlow version:", tf.__version__)
-    print("GPU devices:", tf.config.list_physical_devices('GPU'))
-    
+    print("GPU devices:", tf.config.list_physical_devices("GPU"))
+
     parser = argparse.ArgumentParser(
         description="Run the Street Fighter II AI training lobby with CUDA support"
     )
@@ -585,13 +679,18 @@ if __name__ == "__main__":
         action="store_true",
         help="Disable GPU usage even if available",
     )
+    parser.add_argument(
+        "--show-progress",
+        action="store_true",
+        help="Show more detailed progress during training",
+    )
     args = parser.parse_args()
-    
+
     # Handle GPU disable option
     if args.disable_gpu and len(physical_devices) > 0:
         print("GPU usage manually disabled")
-        tf.config.set_visible_devices([], 'GPU')
-        
+        tf.config.set_visible_devices([], "GPU")
+
     if args.create_state:
         print("Creating default state...")
         create_default_state()
