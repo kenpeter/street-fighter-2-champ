@@ -652,10 +652,3 @@ if __name__ == "__main__":
     if args.create_state:
         print("Creating default state...")
         create_default_state()
-
-    testLobby = Lobby(render=args.render)
-    from Agent import Agent
-
-    agent = Agent()
-    testLobby.addPlayer(agent)
-    testLobby.executeTrainingRun(episodes=args.episodes)
