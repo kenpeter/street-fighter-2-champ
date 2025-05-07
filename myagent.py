@@ -138,6 +138,10 @@ class Agent:
             avg_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
             self.avg_loss_history.append(avg_loss)
 
+        # Recalculate epsilon based on updated total timesteps
+        # This happens after total_timesteps is incremented in recordStep
+        self.calculateEpsilonFromTimesteps()
+
         # Save model and stats
         self.saveModel()
         self.saveStats()
@@ -179,10 +183,15 @@ class Agent:
                     self.episodes_completed = stats.get("episodes_completed", 0)
                     self.avg_reward_history = stats.get("avg_reward_history", [])
                     self.avg_loss_history = stats.get("avg_loss_history", [])
+
+                    # Load saved epsilon value if available
+                    self.saved_epsilon = stats.get("saved_epsilon", 0.9)
+
                     self.loaded_stats = True  # Mark that we loaded stats
                     print(
                         f"Loaded training stats: {self.total_timesteps} timesteps completed over {self.episodes_completed} episodes"
                     )
+                    print(f"Loaded saved epsilon value: {self.saved_epsilon}")
             except Exception as e:
                 print(f"Error loading stats: {e}")
                 print("Starting with fresh training statistics.")
@@ -222,6 +231,7 @@ class Agent:
             "episodes_completed": self.episodes_completed,
             "avg_reward_history": self.avg_reward_history,
             "avg_loss_history": self.avg_loss_history,
+            "saved_epsilon": self.epsilon,  # Save current epsilon value
         }
 
         try:
@@ -383,16 +393,48 @@ class DeepQAgent(Agent):
         self.stateSize = stateSize
         self.actionSize = len(moveList)
         self.gamma = DeepQAgent.DEFAULT_DISCOUNT_RATE
-        if load and not resume:
-            self.epsilon = DeepQAgent.EPSILON_MIN
-        elif resume:
-            self.epsilon = 0.9
-        else:
-            self.epsilon = epsilon
         self.epsilonDecay = DeepQAgent.DEFAULT_EPSILON_DECAY
         self.learningRate = DeepQAgent.DEFAULT_LEARNING_RATE
         self.lossHistory = LossHistory()
+
+        # Initialize total_timesteps before calling the parent constructor
+        # It will be overwritten if we load stats
+        self.total_timesteps = 0
+
         super(DeepQAgent, self).__init__(load=load, name=name, moveList=moveList)
+
+        # Calculate epsilon based on total timesteps
+        # This happens after loadStats() is called by the parent constructor
+        if load and not resume:
+            # When just using a trained model, use minimum epsilon
+            self.epsilon = DeepQAgent.EPSILON_MIN
+        else:
+            # Calculate epsilon based on total timesteps (for both fresh and resumed training)
+            self.calculateEpsilonFromTimesteps()
+            print(
+                f"Epsilon set to {self.epsilon} based on {self.total_timesteps} total timesteps"
+            )
+
+    def calculateEpsilonFromTimesteps(self):
+        """Calculate epsilon based on total timesteps"""
+        # Starting epsilon
+        START_EPSILON = 1.0
+
+        # How many timesteps to reach minimum epsilon
+        # Adjust this value based on your training needs
+        TIMESTEPS_TO_MIN_EPSILON = 500000
+
+        # Calculate epsilon with a linear decay
+        decay_per_step = (
+            START_EPSILON - DeepQAgent.EPSILON_MIN
+        ) / TIMESTEPS_TO_MIN_EPSILON
+        self.epsilon = max(
+            DeepQAgent.EPSILON_MIN,
+            START_EPSILON - (decay_per_step * self.total_timesteps),
+        )
+
+        # Alternatively, for exponential decay:
+        # self.epsilon = max(DeepQAgent.EPSILON_MIN, START_EPSILON * (self.epsilonDecay ** self.total_timesteps))
 
     def getMove(self, obs, info):
         if np.random.rand() <= self.epsilon:
