@@ -441,6 +441,11 @@ class Lobby:
         """The lobby will load each of the saved states to generate data for the agent to train on"""
         start_time = time.time()
 
+        # Reset session-specific counters
+        self.training_stats["session_wins"] = 0
+        self.training_stats["session_losses"] = 0
+        self.training_stats["session_start_time"] = time.time()
+
         def training_thread_function(agent):
             try:
                 print("Starting training in background thread...")
@@ -562,10 +567,19 @@ class Lobby:
             f"Total Win/Loss Record: {self.training_stats['wins']}W - {self.training_stats['losses']}L ({win_rate:.2f}%)"
         )
 
-        # Current session win/loss record
+        # Current session win/loss record (from this specific run)
         session_win_rate = (
-            (self.training_stats["session_wins"] / episodes) * 100
-            if episodes > 0
+            (
+                self.training_stats["session_wins"]
+                / self.training_stats["session_losses"]
+                + self.training_stats["session_wins"]
+            )
+            * 100
+            if (
+                self.training_stats["session_losses"]
+                + self.training_stats["session_wins"]
+            )
+            > 0
             else 0
         )
         print(
@@ -580,7 +594,7 @@ class Lobby:
             previous_losses = (
                 self.training_stats["losses"] - self.training_stats["session_losses"]
             )
-            previous_episodes = self.training_stats["episodes_run"] - episodes
+            previous_episodes = previous_wins + previous_losses
 
             if previous_episodes > 0:
                 previous_win_rate = (previous_wins / previous_episodes) * 100
@@ -622,24 +636,38 @@ class Lobby:
                 f"Agent's accumulated training timesteps: {self.players[0].total_timesteps}"
             )
 
-        # Calculate average reward trend
+        # Calculate average reward trend with normalization for large values
         if len(self.training_stats["episode_rewards"]) >= 2:
-            first_rewards = sum(
-                self.training_stats["episode_rewards"][
-                    : min(3, len(self.training_stats["episode_rewards"]))
-                ]
-            ) / min(3, len(self.training_stats["episode_rewards"]))
-            last_rewards = sum(
-                self.training_stats["episode_rewards"][
-                    -min(3, len(self.training_stats["episode_rewards"])) :
-                ]
-            ) / min(3, len(self.training_stats["episode_rewards"]))
-            reward_trend = last_rewards - first_rewards
-            print(f"Reward trend: {reward_trend:+.2f}")
+            # Get the first and last few episodes (up to 3)
+            first_episodes = self.training_stats["episode_rewards"][
+                : min(3, len(self.training_stats["episode_rewards"]))
+            ]
+            last_episodes = self.training_stats["episode_rewards"][
+                -min(3, len(self.training_stats["episode_rewards"])) :
+            ]
 
-            if reward_trend > 0:
+            # Calculate averages
+            first_rewards = (
+                sum(first_episodes) / len(first_episodes) if first_episodes else 0
+            )
+            last_rewards = (
+                sum(last_episodes) / len(last_episodes) if last_episodes else 0
+            )
+
+            # Calculate trend as a percentage change rather than absolute value
+            if abs(first_rewards) > 0.001:  # Avoid division by zero
+                reward_percent_change = (
+                    (last_rewards - first_rewards) / abs(first_rewards)
+                ) * 100
+                print(f"Reward trend: {reward_percent_change:+.2f}% change")
+            else:
+                reward_trend = last_rewards - first_rewards
+                print(f"Reward trend: {reward_trend:+.2f}")
+
+            # Assess learning progress based on normalized values
+            if last_rewards > first_rewards:
                 print("Learning assessment: POSITIVE - Agent is improving")
-            elif reward_trend > -1:
+            elif last_rewards > first_rewards * 0.95:  # Within 5% of previous
                 print("Learning assessment: NEUTRAL - Agent performance is stable")
             else:
                 print(
