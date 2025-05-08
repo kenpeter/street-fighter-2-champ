@@ -14,12 +14,8 @@ from LossHistory import LossHistory
 import json
 import time
 
-# Print TensorFlow and GPU information for debugging
 print("TensorFlow version:", tf.__version__)
 print("Is GPU available:", bool(tf.config.list_physical_devices("GPU")))
-
-# Configure TensorFlow for GPU memory growth
-# This prevents TensorFlow from allocating all GPU memory at once
 physical_devices = tf.config.list_physical_devices("GPU")
 if len(physical_devices) > 0:
     try:
@@ -27,15 +23,11 @@ if len(physical_devices) > 0:
         for device in physical_devices:
             tf.config.experimental.set_memory_growth(device, True)
         print("GPU memory growth enabled. Device list:", physical_devices)
-
-        # Optional: Set visible devices if you have multiple GPUs
-        # tf.config.set_visible_devices([physical_devices[0]], 'GPU')
     except Exception as e:
         print(f"Error configuring GPU: {e}")
 else:
     print("No GPU devices found. Training will be slow on CPU only.")
     print("Make sure NVIDIA drivers and CUDA are properly installed.")
-
 
 class Agent:
     OBSERVATION_INDEX = 0
@@ -57,19 +49,15 @@ class Agent:
             self.name = name
         self.prepareForNextFight()
         self.moveList = moveList
-
-        # Initialize training stats
         self.total_timesteps = 0
         self.episodes_completed = 0
         self.training_start_time = time.time()
         self.avg_reward_history = []
         self.avg_loss_history = []
-
         if self.__class__.__name__ != "Agent":
             self.model = self.initializeNetwork()
             if load:
                 self.loadModel()
-                # Load training stats if resuming
                 self.loadStats()
 
     def prepareForNextFight(self):
@@ -108,13 +96,10 @@ class Agent:
 
     def recordStep(self, step):
         self.memory.append(step)
-        # Increment timestep counter
         self.total_timesteps += 1
-        # Record reward for metrics
         self.episode_rewards.append(step[Agent.REWARD_INDEX])
 
     def updateEpisodeMetrics(self):
-        """Update metrics at the end of an episode"""
         self.episodes_completed += 1
         if self.episode_rewards:
             avg_reward = sum(self.episode_rewards) / len(self.episode_rewards)
@@ -122,34 +107,20 @@ class Agent:
             self.episode_rewards = []
 
     def reviewFight(self):
-        """Train the model and update stats after an episode"""
         data = self.prepareMemoryForTraining(self.memory)
         self.model = self.trainNetwork(data, self.model)
-
-        # Update episode metrics
         self.updateEpisodeMetrics()
-
-        # Record average loss if available
-        if (
-            hasattr(self, "lossHistory")
-            and hasattr(self.lossHistory, "losses")
-            and len(self.lossHistory.losses) > 0
-        ):
+        if (hasattr(self, "lossHistory") and hasattr(self.lossHistory, "losses") and len(self.lossHistory.losses) > 0):
             avg_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
             self.avg_loss_history.append(avg_loss)
-
-        # Recalculate epsilon based on updated total timesteps
-        # This happens after total_timesteps is incremented in recordStep
-        self.calculateEpsilonFromTimesteps()
-
-        # Save model and stats
+        if hasattr(self, "updateEpsilon"):
+            self.updateEpsilon()
         self.saveModel()
         self.saveStats()
-
-        # Print progress metrics
         self.printTrainingProgress()
+        # to use the mem buffer
+        # Removed: self.prepareForNextFight()
 
-        self.prepareForNextFight()
 
     def loadModel(self):
         model_path = f"../models/{self.name}Model"
@@ -167,14 +138,11 @@ class Agent:
         print("Starting with a new model.")
 
     def loadStats(self):
-        """Load training statistics from file"""
         os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
         stats_path = os.path.join(
             Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_stats.json"
         )
-
-        self.loaded_stats = False  # Track if we loaded stats
-
+        self.loaded_stats = False
         if os.path.exists(stats_path):
             try:
                 with open(stats_path, "r") as file:
@@ -183,11 +151,8 @@ class Agent:
                     self.episodes_completed = stats.get("episodes_completed", 0)
                     self.avg_reward_history = stats.get("avg_reward_history", [])
                     self.avg_loss_history = stats.get("avg_loss_history", [])
-
-                    # Load saved epsilon value if available
                     self.saved_epsilon = stats.get("saved_epsilon", 0.9)
-
-                    self.loaded_stats = True  # Mark that we loaded stats
+                    self.loaded_stats = True
                     print(
                         f"Loaded training stats: {self.total_timesteps} timesteps completed over {self.episodes_completed} episodes"
                     )
@@ -220,20 +185,17 @@ class Agent:
                 file.write("\n")
 
     def saveStats(self):
-        """Save training statistics to file"""
         os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
         stats_path = os.path.join(
             Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_stats.json"
         )
-
         stats = {
             "total_timesteps": self.total_timesteps,
             "episodes_completed": self.episodes_completed,
             "avg_reward_history": self.avg_reward_history,
             "avg_loss_history": self.avg_loss_history,
-            "saved_epsilon": self.epsilon,  # Save current epsilon value
+            "saved_epsilon": self.epsilon,
         }
-
         try:
             with open(stats_path, "w") as file:
                 json.dump(stats, file)
@@ -241,14 +203,11 @@ class Agent:
             print(f"Error saving stats: {e}")
 
     def printTrainingProgress(self):
-        """Print current training progress metrics"""
         elapsed_time = time.time() - self.training_start_time
-
         print("\n==== Training Progress ====")
         print(f"Total timesteps: {self.total_timesteps}")
         print(f"Episodes completed: {self.episodes_completed}")
         print(f"Training time: {elapsed_time:.2f} seconds")
-
         if self.avg_reward_history:
             print(f"Recent average reward: {self.avg_reward_history[-1]:.4f}")
             if len(self.avg_reward_history) >= 2:
@@ -256,7 +215,6 @@ class Agent:
                     self.avg_reward_history[-1] - self.avg_reward_history[-2]
                 )
                 print(f"Reward change: {reward_change:+.4f}")
-
         if (
             hasattr(self, "lossHistory")
             and hasattr(self.lossHistory, "losses")
@@ -264,12 +222,9 @@ class Agent:
         ):
             recent_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
             print(f"Recent loss: {recent_loss:.6f}")
-
             if self.avg_loss_history and len(self.avg_loss_history) >= 2:
                 loss_change = self.avg_loss_history[-1] - self.avg_loss_history[-2]
                 print(f"Loss change: {loss_change:+.6f}")
-
-                # Check if we're making progress or stuck
                 if abs(loss_change) < 0.0001 and self.episodes_completed > 5:
                     print(
                         "WARNING: Training may be stuck in a local minimum - loss is not changing significantly"
@@ -280,18 +235,14 @@ class Agent:
                     print(
                         "Learning progress: Negative or stalled (loss is not decreasing)"
                     )
-
         print("===========================\n")
 
     def printFinalStats(self):
-        """Print final training statistics"""
         elapsed_time = time.time() - self.training_start_time
-
         print("\n======= TRAINING SUMMARY =======")
         print(f"Total training timesteps: {self.total_timesteps}")
         print(f"Total episodes completed: {self.episodes_completed}")
         print(f"Total training time: {elapsed_time:.2f} seconds")
-
         if self.avg_reward_history:
             print(f"Final average reward: {self.avg_reward_history[-1]:.4f}")
             if len(self.avg_reward_history) > 1:
@@ -303,7 +254,6 @@ class Agent:
                 )
                 reward_improvement = last_rewards - first_rewards
                 print(f"Reward improvement: {reward_improvement:+.4f}")
-
         if self.avg_loss_history:
             print(f"Final average loss: {self.avg_loss_history[-1]:.6f}")
             if len(self.avg_loss_history) > 1:
@@ -314,9 +264,7 @@ class Agent:
                     3, len(self.avg_loss_history)
                 )
                 loss_improvement = first_losses - last_losses
-
                 print(f"Loss improvement: {loss_improvement:+.6f}")
-
                 if loss_improvement > 0:
                     learning_status = "POSITIVE - Agent is learning effectively"
                 elif loss_improvement > -0.001:
@@ -325,9 +273,7 @@ class Agent:
                     learning_status = (
                         "NEGATIVE - Agent may be stuck in suboptimal policy"
                     )
-
                 print(f"Learning status: {learning_status}")
-
         print("=================================\n")
 
     def getModelName(self):
@@ -349,10 +295,8 @@ class Agent:
     def trainNetwork(self, data, model):
         raise NotImplementedError("Implement this in the inherited agent")
 
-
 class DeepQAgent(Agent):
     EPSILON_MIN = 0.1
-    DEFAULT_EPSILON_DECAY = 0.999
     DEFAULT_DISCOUNT_RATE = 0.98
     DEFAULT_LEARNING_RATE = 0.0001
     stateIndices = {
@@ -372,7 +316,6 @@ class DeepQAgent(Agent):
     @staticmethod
     def _huber_loss(y_true, y_pred, clip_delta=1.0):
         import tensorflow as tf
-
         error = y_true - y_pred
         cond = tf.abs(error) <= clip_delta
         squared_loss = 0.5 * tf.square(error)
@@ -386,45 +329,33 @@ class DeepQAgent(Agent):
         stateSize=32,
         load=False,
         resume=False,
-        epsilon=1,
+        epsilon=None,
         name=None,
         moveList=Moves,
     ):
         self.stateSize = stateSize
         self.actionSize = len(moveList)
         self.gamma = DeepQAgent.DEFAULT_DISCOUNT_RATE
-        self.epsilonDecay = DeepQAgent.DEFAULT_EPSILON_DECAY
         self.learningRate = DeepQAgent.DEFAULT_LEARNING_RATE
         self.lossHistory = LossHistory()
-
-        # Initialize total_timesteps before calling the parent constructor
-        # It will be overwritten if we load stats
         self.total_timesteps = 0
-
         super(DeepQAgent, self).__init__(load=load, name=name, moveList=moveList)
-
-        # Calculate epsilon based on total timesteps
-        # This happens after loadStats() is called by the parent constructor
-        if load and not resume:
-            # When just using a trained model, use minimum epsilon
-            self.epsilon = DeepQAgent.EPSILON_MIN
+        if epsilon is not None:
+            self.epsilon = epsilon
+            self.fixed_epsilon = True
         else:
-            # Calculate epsilon based on total timesteps (for both fresh and resumed training)
-            self.calculateEpsilonFromTimesteps()
-            print(
-                f"Epsilon set to {self.epsilon} based on {self.total_timesteps} total timesteps"
-            )
+            self.fixed_epsilon = False
+            if load and not resume:
+                self.epsilon = DeepQAgent.EPSILON_MIN
+            else:
+                self.calculateEpsilonFromTimesteps()
+                print(
+                    f"Epsilon set to {self.epsilon} based on {self.total_timesteps} total timesteps"
+                )
 
     def calculateEpsilonFromTimesteps(self):
-        """Calculate epsilon based on total timesteps"""
-        # Starting epsilon
         START_EPSILON = 1.0
-
-        # How many timesteps to reach minimum epsilon
-        # Adjust this value based on your training needs
         TIMESTEPS_TO_MIN_EPSILON = 500000
-
-        # Calculate epsilon with a linear decay
         decay_per_step = (
             START_EPSILON - DeepQAgent.EPSILON_MIN
         ) / TIMESTEPS_TO_MIN_EPSILON
@@ -433,8 +364,9 @@ class DeepQAgent(Agent):
             START_EPSILON - (decay_per_step * self.total_timesteps),
         )
 
-        # Alternatively, for exponential decay:
-        # self.epsilon = max(DeepQAgent.EPSILON_MIN, START_EPSILON * (self.epsilonDecay ** self.total_timesteps))
+    def updateEpsilon(self):
+        if not self.fixed_epsilon:
+            self.calculateEpsilonFromTimesteps()
 
     def getMove(self, obs, info):
         if np.random.rand() <= self.epsilon:
@@ -442,20 +374,16 @@ class DeepQAgent(Agent):
             return move, frameInputs
         else:
             stateData = self.prepareNetworkInputs(info)
-
-            # Use GPU if available - using tf.device context
             if len(tf.config.list_physical_devices("GPU")) > 0:
                 with tf.device("/GPU:0"):
                     predictedRewards = self.model.predict(stateData)[0]
             else:
                 predictedRewards = self.model.predict(stateData)[0]
-
             move = np.argmax(predictedRewards)
             frameInputs = self.convertMoveToFrameInputs(list(self.moveList)[move], info)
             return move, frameInputs
 
     def initializeNetwork(self):
-        # Use GPU if available - using tf.device context
         if len(tf.config.list_physical_devices("GPU")) > 0:
             with tf.device("/GPU:0"):
                 model = Sequential()
@@ -483,7 +411,6 @@ class DeepQAgent(Agent):
                 optimizer=Adam(learning_rate=self.learningRate),
             )
             print("Successfully initialized model on CPU")
-
         return model
 
     def prepareMemoryForTraining(self, memory):
@@ -528,8 +455,6 @@ class DeepQAgent(Agent):
         self.lossHistory.losses_clear()
         batch_count = 0
         max_batches = 20
-
-        # Use GPU if available for training
         if len(tf.config.list_physical_devices("GPU")) > 0:
             print("Training network on GPU...")
             with tf.device("/GPU:0"):
@@ -569,18 +494,11 @@ class DeepQAgent(Agent):
                     callbacks=[self.lossHistory],
                 )
                 batch_count += 1
-
-        if self.epsilon > DeepQAgent.EPSILON_MIN:
-            self.epsilon *= self.epsilonDecay
         return model
 
-
-# Register the custom loss function
 from keras.utils import get_custom_objects
-
 get_custom_objects().update({"_huber_loss": DeepQAgent._huber_loss})
 
-# Print TensorFlow GPU information at module load time
 print("\nGPU configuration summary:")
 print("==========================")
 print("TensorFlow version:", tf.__version__)
