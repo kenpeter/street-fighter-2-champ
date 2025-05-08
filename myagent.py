@@ -13,6 +13,7 @@ from DefaultMoveList import Moves
 from LossHistory import LossHistory
 import json
 import time
+import pickle
 
 print("TensorFlow version:", tf.__version__)
 print("Is GPU available:", bool(tf.config.list_physical_devices("GPU")))
@@ -135,33 +136,6 @@ class Agent:
                 except Exception as e:
                     print(f"Error loading model: {e}")
         print(f"No valid model file found at {model_path}[.keras/.weights.h5/.h5]")
-        print("Starting with a new model.")
-
-    def loadStats(self):
-        os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
-        stats_path = os.path.join(
-            Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_stats.json"
-        )
-        self.loaded_stats = False
-        if os.path.exists(stats_path):
-            try:
-                with open(stats_path, "r") as file:
-                    stats = json.load(file)
-                    self.total_timesteps = stats.get("total_timesteps", 0)
-                    self.episodes_completed = stats.get("episodes_completed", 0)
-                    self.avg_reward_history = stats.get("avg_reward_history", [])
-                    self.avg_loss_history = stats.get("avg_loss_history", [])
-                    self.saved_epsilon = stats.get("saved_epsilon", 0.9)
-                    self.loaded_stats = True
-                    print(
-                        f"Loaded training stats: {self.total_timesteps} timesteps completed over {self.episodes_completed} episodes"
-                    )
-                    print(f"Loaded saved epsilon value: {self.saved_epsilon}")
-            except Exception as e:
-                print(f"Error loading stats: {e}")
-                print("Starting with fresh training statistics.")
-        else:
-            print("No previous training stats found. Starting fresh.")
 
     def saveModel(self):
         os.makedirs(Agent.DEFAULT_MODELS_DIR_PATH, exist_ok=True)
@@ -186,9 +160,8 @@ class Agent:
 
     def saveStats(self):
         os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
-        stats_path = os.path.join(
-            Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_stats.json"
-        )
+        stats_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_stats.json")
+        memory_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_memory.pkl")  # New file for memory
         stats = {
             "total_timesteps": self.total_timesteps,
             "episodes_completed": self.episodes_completed,
@@ -199,8 +172,47 @@ class Agent:
         try:
             with open(stats_path, "w") as file:
                 json.dump(stats, file)
+            with open(memory_path, "wb") as file:  # Save memory buffer
+                pickle.dump(self.memory, file)
+            print(f"Memory buffer saved to {memory_path}")
         except Exception as e:
-            print(f"Error saving stats: {e}")
+            print(f"Error saving stats or memory: {e}")
+
+    def loadStats(self):
+        os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
+        stats_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_stats.json")
+        memory_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_memory.pkl")  # New file for memory
+        self.loaded_stats = False
+        if os.path.exists(stats_path):
+            try:
+                with open(stats_path, "r") as file:
+                    stats = json.load(file)
+                    self.total_timesteps = stats.get("total_timesteps", 0)
+                    self.episodes_completed = stats.get("episodes_completed", 0)
+                    self.avg_reward_history = stats.get("avg_reward_history", [])
+                    self.avg_loss_history = stats.get("avg_loss_history", [])
+                    self.saved_epsilon = stats.get("saved_epsilon", 0.9)
+                    self.loaded_stats = True
+                    print(f"Loaded training stats: {self.total_timesteps} timesteps completed over {self.episodes_completed} episodes")
+                    print(f"Loaded saved epsilon value: {self.saved_epsilon}")
+            except Exception as e:
+                print(f"Error loading stats: {e}")
+                print("Starting with fresh training statistics.")
+        else:
+            print("No previous training stats found. Starting fresh.")
+        
+        # Load memory buffer
+        if os.path.exists(memory_path):
+            try:
+                with open(memory_path, "rb") as file:
+                    self.memory = pickle.load(file)
+                    print(f"Loaded memory buffer from {memory_path} with {len(self.memory)} experiences")
+            except Exception as e:
+                print(f"Error loading memory buffer: {e}")
+                self.memory = deque(maxlen=Agent.MAX_DATA_LENGTH)  # Fallback to empty deque
+        else:
+            self.memory = deque(maxlen=Agent.MAX_DATA_LENGTH)  # Initialize empty if no file
+            print("No previous memory buffer found. Starting with empty buffer.")
 
     def printTrainingProgress(self):
         elapsed_time = time.time() - self.training_start_time
