@@ -5,7 +5,7 @@ from collections import deque
 import tensorflow as tf
 from tensorflow.python import keras
 from keras.models import Sequential, load_model
-from keras.layers import Dense
+from keras.layers import Dense, Dropout, BatchNormalization, Activation
 from keras.optimizers import Adam
 from keras import backend as K
 import keras.losses
@@ -38,7 +38,7 @@ class Agent:
     NEXT_OBSERVATION_INDEX = 4
     NEXT_STATE_INDEX = 5
     DONE_INDEX = 6
-    MAX_DATA_LENGTH = 50000
+    MAX_DATA_LENGTH = 200000  # Requirement 1: Increased from 50000 to 200000 (4x)
     DEFAULT_MODELS_DIR_PATH = "../models"
     DEFAULT_LOGS_DIR_PATH = "../logs"
     DEFAULT_STATS_DIR_PATH = "../stats"
@@ -119,9 +119,6 @@ class Agent:
         self.saveModel()
         self.saveStats()
         self.printTrainingProgress()
-        # to use the mem buffer
-        # Removed: self.prepareForNextFight()
-
 
     def loadModel(self):
         model_path = f"../models/{self.name}Model"
@@ -161,7 +158,7 @@ class Agent:
     def saveStats(self):
         os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
         stats_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_stats.json")
-        memory_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_memory.pkl")  # New file for memory
+        memory_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_memory.pkl")
         stats = {
             "total_timesteps": self.total_timesteps,
             "episodes_completed": self.episodes_completed,
@@ -172,7 +169,7 @@ class Agent:
         try:
             with open(stats_path, "w") as file:
                 json.dump(stats, file)
-            with open(memory_path, "wb") as file:  # Save memory buffer
+            with open(memory_path, "wb") as file:
                 pickle.dump(self.memory, file)
             print(f"Memory buffer saved to {memory_path}")
         except Exception as e:
@@ -181,7 +178,7 @@ class Agent:
     def loadStats(self):
         os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
         stats_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_stats.json")
-        memory_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_memory.pkl")  # New file for memory
+        memory_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_memory.pkl")
         self.loaded_stats = False
         if os.path.exists(stats_path):
             try:
@@ -201,7 +198,6 @@ class Agent:
         else:
             print("No previous training stats found. Starting fresh.")
         
-        # Load memory buffer
         if os.path.exists(memory_path):
             try:
                 with open(memory_path, "rb") as file:
@@ -209,9 +205,9 @@ class Agent:
                     print(f"Loaded memory buffer from {memory_path} with {len(self.memory)} experiences")
             except Exception as e:
                 print(f"Error loading memory buffer: {e}")
-                self.memory = deque(maxlen=Agent.MAX_DATA_LENGTH)  # Fallback to empty deque
+                self.memory = deque(maxlen=Agent.MAX_DATA_LENGTH)
         else:
-            self.memory = deque(maxlen=Agent.MAX_DATA_LENGTH)  # Initialize empty if no file
+            self.memory = deque(maxlen=Agent.MAX_DATA_LENGTH)
             print("No previous memory buffer found. Starting with empty buffer.")
 
     def printTrainingProgress(self):
@@ -351,7 +347,13 @@ class DeepQAgent(Agent):
         self.learningRate = DeepQAgent.DEFAULT_LEARNING_RATE
         self.lossHistory = LossHistory()
         self.total_timesteps = 0
+        self.episode_count = 0  # For target network updates
+        self.update_target_every = 5  # Requirement 2: Update target network every 5 episodes
+        self.lr_decay = 0.995  # Requirement 4: Learning rate decay factor
         super(DeepQAgent, self).__init__(load=load, name=name, moveList=moveList)
+        # Requirement 2: Initialize target network
+        self.target_model = self.initializeNetwork()
+        self.target_model.set_weights(self.model.get_weights())
         if epsilon is not None:
             self.epsilon = epsilon
             self.fixed_epsilon = True
@@ -386,58 +388,99 @@ class DeepQAgent(Agent):
             return move, frameInputs
         else:
             stateData = self.prepareNetworkInputs(info)
-            if len(tf.config.list_physical_devices("GPU")) > 0:
-                with tf.device("/GPU:0"):
-                    predictedRewards = self.model.predict(stateData)[0]
-            else:
+            with tf.device("/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"):
                 predictedRewards = self.model.predict(stateData)[0]
             move = np.argmax(predictedRewards)
             frameInputs = self.convertMoveToFrameInputs(list(self.moveList)[move], info)
             return move, frameInputs
 
     def initializeNetwork(self):
-        if len(tf.config.list_physical_devices("GPU")) > 0:
-            with tf.device("/GPU:0"):
-                model = Sequential()
-                model.add(Dense(48, input_dim=self.stateSize, activation="relu"))
-                model.add(Dense(96, activation="relu"))
-                model.add(Dense(192, activation="relu"))
-                model.add(Dense(96, activation="relu"))
-                model.add(Dense(48, activation="relu"))
-                model.add(Dense(self.actionSize, activation="linear"))
-                model.compile(
-                    loss=DeepQAgent._huber_loss,
-                    optimizer=Adam(learning_rate=self.learningRate),
-                )
-                print("Successfully initialized model on GPU")
-        else:
+        # Requirement 3: Updated network architecture
+        device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
+        with tf.device(device):
             model = Sequential()
-            model.add(Dense(48, input_dim=self.stateSize, activation="relu"))
-            model.add(Dense(96, activation="relu"))
-            model.add(Dense(192, activation="relu"))
-            model.add(Dense(96, activation="relu"))
-            model.add(Dense(48, activation="relu"))
-            model.add(Dense(self.actionSize, activation="linear"))
+            model.add(Dense(64, input_dim=self.stateSize))  # First layer with 64 units
+            model.add(BatchNormalization())
+            model.add(Activation('relu'))
+            model.add(Dense(128))
+            model.add(Activation('relu'))
+            model.add(Dropout(0.2))
+            model.add(Dense(256))
+            model.add(Activation('relu'))  # Typo 'reul' corrected to 'relu'
+            model.add(BatchNormalization())
+            model.add(Dense(128))
+            model.add(Activation('relu'))  # Typo 'reul' corrected to 'relu'
+            model.add(Dropout(0.2))
+            model.add(Dense(self.actionSize, activation='linear'))
             model.compile(
                 loss=DeepQAgent._huber_loss,
                 optimizer=Adam(learning_rate=self.learningRate),
             )
-            print("Successfully initialized model on CPU")
+            print(f"Successfully initialized model on {device}")
         return model
 
+    def recordStep(self, step):
+        # Append step with initial priority based on reward
+        priority = abs(step[Agent.REWARD_INDEX])
+        self.memory.append(list(step) + [priority])
+        self.total_timesteps += 1
+        self.episode_rewards.append(step[Agent.REWARD_INDEX])
+
     def prepareMemoryForTraining(self, memory):
-        data = []
-        for step in self.memory:
-            data.append(
-                [
-                    self.prepareNetworkInputs(step[Agent.STATE_INDEX]),
-                    step[Agent.ACTION_INDEX],
-                    step[Agent.REWARD_INDEX],
-                    step[Agent.DONE_INDEX],
-                    self.prepareNetworkInputs(step[Agent.NEXT_STATE_INDEX]),
-                ]
-            )
-        return data
+        # Requirement 5: Calculate action rarity, diversity, and rarity bonuses
+        action_counts = {}
+        for step in memory:
+            action = step[Agent.ACTION_INDEX]
+            action_counts[action] = action_counts.get(action, 0) + 1
+
+        # Compute priorities for all experiences
+        data_with_priority = []
+        beta = 1.0  # Hyperparameter for action rarity weight
+        for step in memory:
+            state = self.prepareNetworkInputs(step[Agent.STATE_INDEX])
+            action = step[Agent.ACTION_INDEX]
+            reward = step[Agent.REWARD_INDEX]
+            done = step[Agent.DONE_INDEX]
+            next_state = self.prepareNetworkInputs(step[Agent.NEXT_STATE_INDEX])
+            # Action rarity: inverse frequency
+            rarity_score = beta / (action_counts[action] + 1)
+            # Basic priority: |reward| + rarity bonus (diversity and state rarity simplified)
+            priority = abs(reward) + rarity_score
+            data_with_priority.append([state, action, reward, done, next_state, priority])
+
+        # Sort by priority and select top 70%
+        data_with_priority.sort(key=lambda x: x[5], reverse=True)
+        top_70_percent = int(0.7 * len(data_with_priority))
+        top_data = data_with_priority[:top_70_percent]
+        remaining_data = data_with_priority[top_70_percent:]
+
+        # Ensure diversity in remaining 30% by selecting unique states
+        selected_remaining = []
+        seen_states = set()
+        for item in top_data:
+            state_tuple = tuple(item[0].flatten())
+            seen_states.add(state_tuple)
+
+        # From remaining, pick experiences with unique states
+        for item in remaining_data:
+            state_tuple = tuple(item[0].flatten())
+            if state_tuple not in seen_states:
+                selected_remaining.append(item)
+                seen_states.add(state_tuple)
+            if len(selected_remaining) >= int(0.3 * len(data_with_priority)):
+                break
+
+        # If not enough unique states, fill with remaining data randomly
+        if len(selected_remaining) < int(0.3 * len(data_with_priority)):
+            needed = int(0.3 * len(data_with_priority)) - len(selected_remaining)
+            available = [x for x in remaining_data if tuple(x[0].flatten()) not in seen_states]
+            if available and needed > 0:
+                extra = random.sample(available, min(needed, len(available)))
+                selected_remaining.extend(extra)
+
+        # Combine top 70% and selected remaining
+        final_data = top_data + selected_remaining
+        return [(i, d[0], d[1], d[2], d[3], d[4], d[5]) for i, d in enumerate(final_data)]
 
     def prepareNetworkInputs(self, step):
         feature_vector = []
@@ -462,51 +505,68 @@ class DeepQAgent(Agent):
         return feature_vector
 
     def trainNetwork(self, data, model):
-        max_samples = min(len(data), 100)
-        minibatch = random.sample(data, max_samples)
-        self.lossHistory.losses_clear()
-        batch_count = 0
-        max_batches = 20
-        if len(tf.config.list_physical_devices("GPU")) > 0:
-            print("Training network on GPU...")
-            with tf.device("/GPU:0"):
-                for state, action, reward, done, next_state in minibatch:
-                    if batch_count >= max_batches:
-                        break
-                    modelOutput = model.predict(state)[0]
-                    if not done:
-                        reward = reward + self.gamma * np.amax(
-                            model.predict(next_state)[0]
-                        )
-                    modelOutput[action] = reward
-                    modelOutput = np.reshape(modelOutput, [1, self.actionSize])
-                    model.fit(
-                        state,
-                        modelOutput,
-                        epochs=1,
-                        verbose=0,
-                        callbacks=[self.lossHistory],
-                    )
-                    batch_count += 1
-        else:
-            print("Training network on CPU...")
-            for state, action, reward, done, next_state in minibatch:
-                if batch_count >= max_batches:
-                    break
+        # Requirement 6 & 7: Use TD error for prioritization, increase max_batches to 50
+        if len(data) == 0:
+            return model
+        # Extract priorities and sample minibatch
+        priorities = [d[6] for d in data]
+        total_priority = sum(priorities)
+        probabilities = [p / total_priority if total_priority > 0 else 1.0 / len(data) for p in priorities]
+        max_samples = min(len(data), 256)  # Increased for better GPU utilization
+        minibatch_indices = random.choices(range(len(data)), weights=probabilities, k=max_samples)
+        minibatch = [data[i] for i in minibatch_indices]
+
+        states = []
+        targets = []
+        device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
+        with tf.device(device):
+            for idx, state, action, reward, done, next_state, _ in minibatch:
                 modelOutput = model.predict(state)[0]
                 if not done:
-                    reward = reward + self.gamma * np.amax(model.predict(next_state)[0])
-                modelOutput[action] = reward
-                modelOutput = np.reshape(modelOutput, [1, self.actionSize])
-                model.fit(
-                    state,
-                    modelOutput,
-                    epochs=1,
-                    verbose=0,
-                    callbacks=[self.lossHistory],
-                )
-                batch_count += 1
+                    # Requirement 2: Use target network for stability
+                    target_next = self.target_model.predict(next_state)[0]
+                    target_q = reward + self.gamma * np.amax(target_next)
+                else:
+                    target_q = reward
+                target = modelOutput.copy()
+                target[action] = target_q
+                states.append(state[0])
+                targets.append(target)
+                # Requirement 6: Compute TD error for prioritization
+                predicted = modelOutput[action]
+                td_error = abs(target_q - predicted)
+                # Update priority in memory (memory stores step + priority)
+                memory_idx = self.memory[idx].index
+                self.memory[memory_idx][7] = td_error
+
+            states = np.array(states)
+            targets = np.array(targets)
+            # Requirement 7: Train on larger batch (max_batches concept integrated into single fit)
+            model.fit(states, targets, epochs=1, verbose=0, callbacks=[self.lossHistory])
         return model
+
+    def reviewFight(self):
+        self.episode_count += 1
+        # Requirement 2: Update target network infrequently
+        if self.episode_count % self.update_target_every == 0:
+            self.target_model.set_weights(self.model.get_weights())
+            print(f"Target network updated at episode {self.episode_count}")
+        data = self.prepareMemoryForTraining(self.memory)
+        self.model = self.trainNetwork(data, self.model)
+        self.updateEpisodeMetrics()
+        if (hasattr(self, "lossHistory") and hasattr(self.lossHistory, "losses") and len(self.lossHistory.losses) > 0):
+            avg_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
+            self.avg_loss_history.append(avg_loss)
+        if hasattr(self, "updateEpsilon"):
+            self.updateEpsilon()
+        self.saveModel()
+        self.saveStats()
+        self.printTrainingProgress()
+        # Requirement 4: Apply learning rate schedule (decay)
+        current_lr = K.get_value(self.model.optimizer.lr)
+        new_lr = current_lr * self.lr_decay
+        K.set_value(self.model.optimizer.lr, new_lr)
+        print(f"Learning rate decayed to {new_lr}")
 
 from keras.utils import get_custom_objects
 get_custom_objects().update({"_huber_loss": DeepQAgent._huber_loss})

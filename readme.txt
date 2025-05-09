@@ -13,7 +13,7 @@ python -m retro.import .
 
 
 
-python Lobby.py --episodes 10 --background --resume --epsilon 0.8
+python Lobby.py --episodes 10 --background --resume --epsilon 0.9
 
 
 
