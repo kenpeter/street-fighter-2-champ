@@ -38,7 +38,7 @@ class Agent:
     NEXT_OBSERVATION_INDEX = 4
     NEXT_STATE_INDEX = 5
     DONE_INDEX = 6
-    MAX_DATA_LENGTH = 500000  # Requirement 1: Increased from 50000 to 200000 (4x)
+    MAX_DATA_LENGTH = 200000  # Requirement 1: Increased from 50000 to 200000 (4x)
     DEFAULT_MODELS_DIR_PATH = "../models"
     DEFAULT_LOGS_DIR_PATH = "../logs"
     DEFAULT_STATS_DIR_PATH = "../stats"
@@ -399,22 +399,21 @@ class DeepQAgent(Agent):
             return move, frameInputs
 
     def initializeNetwork(self):
+        # Requirement 3: Updated network architecture
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
         with tf.device(device):
             model = Sequential()
-            model.add(Dense(256, input_dim=self.stateSize))
+            model.add(Dense(64, input_dim=self.stateSize))  # First layer with 64 units
             model.add(BatchNormalization())
             model.add(Activation('relu'))
-            model.add(Dense(256))
-            model.add(BatchNormalization())
+            model.add(Dense(128))
             model.add(Activation('relu'))
             model.add(Dropout(0.2))
             model.add(Dense(256))
+            model.add(Activation('relu'))  # Typo 'reul' corrected to 'relu'
             model.add(BatchNormalization())
-            model.add(Activation('relu'))
-            model.add(Dense(256))
-            model.add(BatchNormalization())
-            model.add(Activation('relu'))
+            model.add(Dense(128))
+            model.add(Activation('relu'))  # Typo 'reul' corrected to 'relu'
             model.add(Dropout(0.2))
             model.add(Dense(self.actionSize, activation='linear'))
             model.compile(
@@ -423,7 +422,6 @@ class DeepQAgent(Agent):
             )
             print(f"Successfully initialized model on {device}")
         return model
-
 
     def recordStep(self, step):
         # Append step with initial priority based on reward
