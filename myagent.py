@@ -55,6 +55,10 @@ class Agent:
         self.training_start_time = time.time()
         self.avg_reward_history = []
         self.avg_loss_history = []
+
+        self.lr_step_size = 10000  # Apply decay every 10,000 timesteps
+        self.last_lr_update = 0  # Timestep of last update
+
         if self.__class__.__name__ != "Agent":
             self.model = self.initializeNetwork()
             if load:
@@ -562,11 +566,16 @@ class DeepQAgent(Agent):
         self.saveModel()
         self.saveStats()
         self.printTrainingProgress()
-        # Requirement 4: Apply learning rate schedule (decay)
-        current_lr = K.get_value(self.model.optimizer.lr)
-        new_lr = current_lr * self.lr_decay
-        K.set_value(self.model.optimizer.lr, new_lr)
-        print(f"Learning rate decayed to {new_lr}")
+
+
+        # Then replace the learning rate decay code in reviewFight() with:
+        if self.total_timesteps - self.last_lr_update >= self.lr_step_size:
+            current_lr = K.get_value(self.model.optimizer.lr)
+            new_lr = current_lr * self.lr_decay
+            K.set_value(self.model.optimizer.lr, new_lr)
+            print(f"Learning rate decayed to {new_lr} at {self.total_timesteps} timesteps")
+            self.last_lr_update = self.total_timesteps
+
 
 from keras.utils import get_custom_objects
 get_custom_objects().update({"_huber_loss": DeepQAgent._huber_loss})
