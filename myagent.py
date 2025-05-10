@@ -168,17 +168,23 @@ class Agent:
             "episodes_completed": self.episodes_completed,
             "avg_reward_history": self.avg_reward_history,
             "avg_loss_history": self.avg_loss_history,
-            "saved_epsilon": self.epsilon,
+            "saved_epsilon": getattr(self, "epsilon", 0.9),
         }
         try:
             with open(stats_path, "w") as file:
-                json.dump(stats, file)
+                json.dump(stats, file, indent=4)
+            print(f"Stats saved to {stats_path}")
+        except Exception as e:
+            print(f"Error saving stats to {stats_path}: {e}")
+
+        try:
             with open(memory_path, "wb") as file:
                 pickle.dump(self.memory, file)
             print(f"Memory buffer saved to {memory_path}")
         except Exception as e:
-            print(f"Error saving stats or memory: {e}")
-
+            print(f"Error saving memory buffer to {memory_path}: {e}")
+            
+    
     def loadStats(self):
         os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
         stats_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_stats.json")
@@ -194,21 +200,21 @@ class Agent:
                     self.avg_loss_history = stats.get("avg_loss_history", [])
                     self.saved_epsilon = stats.get("saved_epsilon", 0.9)
                     self.loaded_stats = True
-                    print(f"Loaded training stats: {self.total_timesteps} timesteps completed over {self.episodes_completed} episodes")
-                    print(f"Loaded saved epsilon value: {self.saved_epsilon}")
+                    print(f"Loaded training stats: {self.total_timesteps} timesteps over {self.episodes_completed} episodes")
+                    print(f"Loaded saved epsilon: {self.saved_epsilon}")
             except Exception as e:
-                print(f"Error loading stats: {e}")
+                print(f"Error loading stats from {stats_path}: {e}")
                 print("Starting with fresh training statistics.")
         else:
-            print("No previous training stats found. Starting fresh.")
-        
+            print(f"No stats file found at {stats_path}. Starting fresh.")
+
         if os.path.exists(memory_path):
             try:
                 with open(memory_path, "rb") as file:
                     self.memory = pickle.load(file)
                     print(f"Loaded memory buffer from {memory_path} with {len(self.memory)} experiences")
             except Exception as e:
-                print(f"Error loading memory buffer: {e}")
+                print(f"Error loading memory buffer from {memory_path}: {e}")
                 self.memory = deque(maxlen=Agent.MAX_DATA_LENGTH)
         else:
             self.memory = deque(maxlen=Agent.MAX_DATA_LENGTH)
@@ -258,35 +264,25 @@ class Agent:
         if self.avg_reward_history:
             print(f"Final average reward: {self.avg_reward_history[-1]:.4f}")
             if len(self.avg_reward_history) > 1:
-                first_rewards = sum(self.avg_reward_history[:3]) / min(
-                    3, len(self.avg_reward_history)
-                )
-                last_rewards = sum(self.avg_reward_history[-3:]) / min(
-                    3, len(self.avg_reward_history)
-                )
+                first_rewards = sum(self.avg_reward_history[:3]) / min(3, len(self.avg_reward_history))
+                last_rewards = sum(self.avg_reward_history[-3:]) / min(3, len(self.avg_reward_history))
                 reward_improvement = last_rewards - first_rewards
                 print(f"Reward improvement: {reward_improvement:+.4f}")
         if self.avg_loss_history:
             print(f"Final average loss: {self.avg_loss_history[-1]:.6f}")
             if len(self.avg_loss_history) > 1:
-                first_losses = sum(self.avg_loss_history[:3]) / min(
-                    3, len(self.avg_loss_history)
-                )
-                last_losses = sum(self.avg_loss_history[-3:]) / min(
-                    3, len(self.avg_loss_history)
-                )
+                first_losses = sum(self.avg_loss_history[:3]) / min(3, len(self.avg_loss_history))
+                last_losses = sum(self.avg_loss_history[-3:]) / min(3, len(self.avg_loss_history))
                 loss_improvement = first_losses - last_losses
                 print(f"Loss improvement: {loss_improvement:+.6f}")
-                if loss_improvement > 0:
-                    learning_status = "POSITIVE - Agent is learning effectively"
-                elif loss_improvement > -0.001:
-                    learning_status = "NEUTRAL - Small improvements in learning"
-                else:
-                    learning_status = (
-                        "NEGATIVE - Agent may be stuck in suboptimal policy"
-                    )
+                learning_status = (
+                    "POSITIVE - Agent is learning effectively" if loss_improvement > 0 else
+                    "NEUTRAL - Small improvements in learning" if loss_improvement > -0.001 else
+                    "NEGATIVE - Agent may be stuck in suboptimal policy"
+                )
                 print(f"Learning status: {learning_status}")
         print("=================================\n")
+
 
     def getModelName(self):
         return self.name + "Model"
