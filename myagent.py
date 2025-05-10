@@ -399,21 +399,22 @@ class DeepQAgent(Agent):
             return move, frameInputs
 
     def initializeNetwork(self):
-        # Requirement 3: Updated network architecture
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
         with tf.device(device):
             model = Sequential()
-            model.add(Dense(64, input_dim=self.stateSize))  # First layer with 64 units
+            model.add(Dense(256, input_dim=self.stateSize))
             model.add(BatchNormalization())
             model.add(Activation('relu'))
-            model.add(Dense(128))
+            model.add(Dense(256))
+            model.add(BatchNormalization())
             model.add(Activation('relu'))
             model.add(Dropout(0.2))
             model.add(Dense(256))
-            model.add(Activation('relu'))  # Typo 'reul' corrected to 'relu'
             model.add(BatchNormalization())
-            model.add(Dense(128))
-            model.add(Activation('relu'))  # Typo 'reul' corrected to 'relu'
+            model.add(Activation('relu'))
+            model.add(Dense(256))
+            model.add(BatchNormalization())
+            model.add(Activation('relu'))
             model.add(Dropout(0.2))
             model.add(Dense(self.actionSize, activation='linear'))
             model.compile(
@@ -422,6 +423,7 @@ class DeepQAgent(Agent):
             )
             print(f"Successfully initialized model on {device}")
         return model
+
 
     def recordStep(self, step):
         # Append step with initial priority based on reward
@@ -488,8 +490,11 @@ class DeepQAgent(Agent):
 
     def prepareNetworkInputs(self, step):
         feature_vector = []
+        # e health
         feature_vector.append(step["enemy_health"])
+        # e x
         feature_vector.append(step["enemy_x_position"])
+        # e y
         feature_vector.append(step["enemy_y_position"])
         oneHotEnemyState = [0] * len(DeepQAgent.stateIndices.keys())
         if step["enemy_status"] not in DeepQAgent.doneKeys:

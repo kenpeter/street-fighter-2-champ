@@ -16,8 +16,11 @@ python -m retro.import .
 
 
 60%
-python Lobby.py --episodes 1 --background --resume --epsilon 0.3 --lr 0.001
+python Lobby.py --episodes 1 --background --resume --epsilon 0.9
 
+
+
+python Lobby.py --play
 
 
 
@@ -46,3 +49,14 @@ How to Create Higher-Level AI States:
 | 70%      | 0.20    | 0.0005        | 250,000         |
 | 80%      | 0.10    | 0.0001        | 500,000         |
 | 90%      | 0.05    | 0.00005       | 1,000,000       |
+
+
+
+
+
+Win Percentage	Estimated Training Steps
+50%	50,000
+60%	100,000
+70%	200,000
+80%	500,000
+90%	1,000,000
