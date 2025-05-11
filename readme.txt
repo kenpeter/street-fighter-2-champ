@@ -15,13 +15,7 @@ python -m retro.import .
 
 
 
-60%
-python Lobby.py --episodes 1 --background --epsilon 0.9 --resume
-
-
-
-python Lobby.py --play
-
+python Lobby.py --episodes 1 --epsilon 0.9 --resume
 
 
 

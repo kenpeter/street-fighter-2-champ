@@ -627,6 +627,13 @@ class Lobby:
                 print(f"Loading state: {state}")
                 try:
                     self.play(state=state)
+                    # Call reviewFight after each play(state) to update metrics per episode
+                    if review and self.players[0].__class__.__name__ != "Agent":
+                        if len(physical_devices) > 0:
+                            with tf.device("/GPU:0"):
+                                self.players[0].reviewFight()
+                        else:
+                            self.players[0].reviewFight()
                 except Exception as e:
                     print(f"Error playing state {state}: {e}")
                     if self.environment is not None:
@@ -636,6 +643,7 @@ class Lobby:
                         except:
                             pass
                     continue
+            # Background training for display episode (optional)
             if (
                 episodeNumber == display_episode
                 and background_training
@@ -650,25 +658,6 @@ class Lobby:
                 training_thread.start()
 
         self.render = original_render
-
-        if (
-            not background_training
-            and review
-            and self.players[0].__class__.__name__ != "Agent"
-        ):
-            try:
-                print("Starting review process...")
-                if len(physical_devices) > 0:
-                    print("Using GPU for review...")
-                    with tf.device("/GPU:0"):
-                        self.players[0].reviewFight()
-                else:
-                    self.players[0].reviewFight()
-                print("Review completed")
-            except Exception as e:
-                print(f"Error during review: {e}")
-                import traceback
-                traceback.print_exc()
 
         if hasattr(self.players[0], "printFinalStats"):
             self.players[0].printFinalStats()
