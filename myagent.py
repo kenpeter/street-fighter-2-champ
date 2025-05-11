@@ -48,6 +48,25 @@ class Agent:
             self.name = self.__class__.__name__
         else:
             self.name = name
+            
+        # Get current directory for absolute paths
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Update class variables with absolute paths
+        Agent.DEFAULT_MODELS_DIR_PATH = os.path.join(current_dir, "models")
+        Agent.DEFAULT_LOGS_DIR_PATH = os.path.join(current_dir, "logs")
+        Agent.DEFAULT_STATS_DIR_PATH = os.path.join(current_dir, "stats")
+        
+        # Create necessary directories with absolute paths
+        os.makedirs(Agent.DEFAULT_MODELS_DIR_PATH, exist_ok=True)
+        os.makedirs(Agent.DEFAULT_LOGS_DIR_PATH, exist_ok=True)
+        os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
+        
+        print(f"Agent {self.name} initialization:")
+        print(f"Models directory: {Agent.DEFAULT_MODELS_DIR_PATH}")
+        print(f"Logs directory: {Agent.DEFAULT_LOGS_DIR_PATH}")
+        print(f"Stats directory: {Agent.DEFAULT_STATS_DIR_PATH}")
+        
         self.prepareForNextFight()
         self.moveList = moveList
         self.total_timesteps = 0
@@ -125,70 +144,161 @@ class Agent:
         self.printTrainingProgress()
 
     def loadModel(self):
-        model_path = f"../models/{self.name}Model"
-        for ext in [".keras", ".weights.h5", ".h5"]:
-            full_path = model_path + ext
-            if os.path.exists(full_path):
-                print(f"Found model file: {full_path}")
-                try:
-                    self.model.load_weights(full_path)
-                    print("Model loaded successfully!")
-                    return
-                except Exception as e:
-                    print(f"Error loading model: {e}")
-        print(f"No valid model file found at {model_path}[.keras/.weights.h5/.h5]")
+        # Get current directory for absolute paths
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Make sure directories exist with absolute paths
+        models_dir = os.path.join(current_dir, "models")
+        os.makedirs(models_dir, exist_ok=True)
+        
+        # Debug output
+        print(f"Looking for model files in: {models_dir}")
+        
+        # Fix path to look for models in different possible locations
+        model_paths = [
+            os.path.join(models_dir, f"{self.name}Model"),
+            os.path.join(current_dir, "models", f"{self.name}Model"),
+            os.path.join(current_dir, "..", "models", f"{self.name}Model")
+        ]
+        
+        for base_path in model_paths:
+            for ext in [".keras", ".weights.h5", ".h5"]:
+                full_path = base_path + ext
+                if os.path.exists(full_path):
+                    print(f"Found model file: {full_path}")
+                    try:
+                        self.model.load_weights(full_path)
+                        print(f"✓ Model loaded successfully from {full_path}!")
+                        return
+                    except Exception as e:
+                        print(f"Error loading model from {full_path}: {e}")
+        
+        print(f"No valid model file found, will use a new model.")
 
     def saveModel(self):
-        os.makedirs(Agent.DEFAULT_MODELS_DIR_PATH, exist_ok=True)
-        model_path = os.path.join(
-            Agent.DEFAULT_MODELS_DIR_PATH, self.getModelName() + ".weights.h5"
-        )
-        self.model.save_weights(model_path)
-        print(f"Model weights saved to {model_path}")
-        os.makedirs(Agent.DEFAULT_LOGS_DIR_PATH, exist_ok=True)
-        with open(
-            os.path.join(Agent.DEFAULT_LOGS_DIR_PATH, self.getLogsName()), "a+"
-        ) as file:
-            if (
-                hasattr(self, "lossHistory")
-                and hasattr(self.lossHistory, "losses")
-                and len(self.lossHistory.losses) > 0
-            ):
-                file.write(
-                    str(sum(self.lossHistory.losses) / len(self.lossHistory.losses))
-                )
-                file.write("\n")
+        try:
+            # Ensure directory exists with explicit path
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            models_dir = os.path.join(current_dir, "models")
+            os.makedirs(models_dir, exist_ok=True)
+            
+            # Get absolute path for model
+            model_path = os.path.join(models_dir, f"{self.getModelName()}.weights.h5")
+            
+            # Debug output
+            print(f"Attempting to save model to: {model_path}")
+            
+            # Save model with error handling
+            try:
+                self.model.save_weights(model_path)
+                print(f"✓ Model weights saved to {model_path}")
+            except Exception as e:
+                print(f"Error saving model weights: {e}")
+                # Try alternate save method
+                try:
+                    alt_path = os.path.join(models_dir, f"{self.getModelName()}.keras")
+                    self.model.save(alt_path)
+                    print(f"✓ Model saved using alternative method to {alt_path}")
+                except Exception as e2:
+                    print(f"Alternative save also failed: {e2}")
+            
+            # Save logs
+            logs_dir = os.path.join(current_dir, "logs")
+            os.makedirs(logs_dir, exist_ok=True)
+            logs_path = os.path.join(logs_dir, f"{self.getLogsName()}")
+            
+            print(f"Attempting to save logs to: {logs_path}")
+            with open(logs_path, "a+") as file:
+                if (
+                    hasattr(self, "lossHistory")
+                    and hasattr(self.lossHistory, "losses")
+                    and len(self.lossHistory.losses) > 0
+                ):
+                    avg_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
+                    file.write(f"{avg_loss}\n")
+                    print(f"✓ Logs saved to {logs_path}")
+        except Exception as e:
+            print(f"Critical error in saveModel: {e}")
+            import traceback
+            traceback.print_exc()
 
     def saveStats(self):
-        os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
-        stats_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_stats.json")
-        memory_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_memory.pkl")
-        stats = {
-            "total_timesteps": self.total_timesteps,
-            "episodes_completed": self.episodes_completed,
-            "avg_reward_history": self.avg_reward_history,
-            "avg_loss_history": self.avg_loss_history,
-            "saved_epsilon": getattr(self, "epsilon", 0.9),
-        }
         try:
-            with open(stats_path, "w") as file:
-                json.dump(stats, file, indent=4)
-            print(f"Stats saved to {stats_path}")
-        except Exception as e:
-            print(f"Error saving stats to {stats_path}: {e}")
+            # Get current directory for absolute paths
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            
+            # Ensure stats directory exists with explicit path
+            stats_dir = os.path.join(current_dir, "stats")
+            os.makedirs(stats_dir, exist_ok=True)
+            
+            # Get absolute paths for files
+            stats_path = os.path.join(stats_dir, f"{self.name}_stats.json")
+            memory_path = os.path.join(stats_dir, f"{self.name}_memory.pkl")
+            
+            # Debug output
+            print(f"Attempting to save stats to: {stats_path}")
+            print(f"Attempting to save memory to: {memory_path}")
+            
+            # Prepare stats dict
+            stats = {
+                "total_timesteps": self.total_timesteps,
+                "episodes_completed": self.episodes_completed,
+                "avg_reward_history": self.avg_reward_history,
+                "avg_loss_history": self.avg_loss_history,
+                "saved_epsilon": getattr(self, "epsilon", 0.9),
+            }
+            
+            # Save stats JSON
+            try:
+                with open(stats_path, "w") as file:
+                    json.dump(stats, file, indent=4)
+                print(f"✓ Stats saved to {stats_path}")
+            except Exception as e:
+                print(f"Error saving stats to {stats_path}: {e}")
+                # Try alternate location in current directory
+                alt_path = os.path.join(current_dir, f"{self.name}_stats.json")
+                try:
+                    with open(alt_path, "w") as file:
+                        json.dump(stats, file, indent=4)
+                    print(f"✓ Stats saved to alternate location: {alt_path}")
+                except Exception as e2:
+                    print(f"Alternative stats save also failed: {e2}")
 
-        try:
-            with open(memory_path, "wb") as file:
-                pickle.dump(self.memory, file)
-            print(f"Memory buffer saved to {memory_path}")
+            # Save memory buffer
+            try:
+                with open(memory_path, "wb") as file:
+                    pickle.dump(self.memory, file)
+                print(f"✓ Memory buffer saved to {memory_path}")
+            except Exception as e:
+                print(f"Error saving memory buffer to {memory_path}: {e}")
+                # Try alternate location in current directory
+                alt_memory_path = os.path.join(current_dir, f"{self.name}_memory.pkl")
+                try:
+                    with open(alt_memory_path, "wb") as file:
+                        pickle.dump(self.memory, file)
+                    print(f"✓ Memory saved to alternate location: {alt_memory_path}")
+                except Exception as e2:
+                    print(f"Alternative memory save also failed: {e2}")
         except Exception as e:
-            print(f"Error saving memory buffer to {memory_path}: {e}")
+            print(f"Critical error in saveStats: {e}")
+            import traceback
+            traceback.print_exc()
             
     
     def loadStats(self):
-        os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
-        stats_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_stats.json")
-        memory_path = os.path.join(Agent.DEFAULT_STATS_DIR_PATH, f"{self.name}_memory.pkl")
+        # Get current directory for absolute paths
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Make sure directories exist with absolute paths
+        stats_dir = os.path.join(current_dir, "stats")
+        os.makedirs(stats_dir, exist_ok=True)
+        
+        # Debug output
+        print(f"Looking for stats files in: {stats_dir}")
+        
+        stats_path = os.path.join(stats_dir, f"{self.name}_stats.json")
+        memory_path = os.path.join(stats_dir, f"{self.name}_memory.pkl")
+        
         self.loaded_stats = False
         if os.path.exists(stats_path):
             try:
@@ -198,10 +308,14 @@ class Agent:
                     self.episodes_completed = stats.get("episodes_completed", 0)
                     self.avg_reward_history = stats.get("avg_reward_history", [])
                     self.avg_loss_history = stats.get("avg_loss_history", [])
-                    self.saved_epsilon = stats.get("saved_epsilon", 0.9)
+                    if hasattr(self, "epsilon"):
+                        self.epsilon = stats.get("saved_epsilon", 0.9)
                     self.loaded_stats = True
-                    print(f"Loaded training stats: {self.total_timesteps} timesteps over {self.episodes_completed} episodes")
-                    print(f"Loaded saved epsilon: {self.saved_epsilon}")
+                    print(f"✓ Loaded training stats from {stats_path}")
+                    print(f"  - Timesteps: {self.total_timesteps}")
+                    print(f"  - Episodes: {self.episodes_completed}")
+                    if hasattr(self, "epsilon"):
+                        print(f"  - Epsilon: {self.epsilon}")
             except Exception as e:
                 print(f"Error loading stats from {stats_path}: {e}")
                 print("Starting with fresh training statistics.")
@@ -212,7 +326,7 @@ class Agent:
             try:
                 with open(memory_path, "rb") as file:
                     self.memory = pickle.load(file)
-                    print(f"Loaded memory buffer from {memory_path} with {len(self.memory)} experiences")
+                    print(f"✓ Loaded memory buffer from {memory_path} with {len(self.memory)} experiences")
             except Exception as e:
                 print(f"Error loading memory buffer from {memory_path}: {e}")
                 self.memory = deque(maxlen=Agent.MAX_DATA_LENGTH)
@@ -406,10 +520,10 @@ class DeepQAgent(Agent):
             model.add(Activation('relu'))
             model.add(Dropout(0.2))
             model.add(Dense(256))
-            model.add(Activation('relu'))  # Typo 'reul' corrected to 'relu'
+            model.add(Activation('relu'))
             model.add(BatchNormalization())
             model.add(Dense(128))
-            model.add(Activation('relu'))  # Typo 'reul' corrected to 'relu'
+            model.add(Activation('relu'))
             model.add(Dropout(0.2))
             model.add(Dense(self.actionSize, activation='linear'))
             model.compile(
@@ -422,7 +536,10 @@ class DeepQAgent(Agent):
     def recordStep(self, step):
         # Append step with initial priority based on reward
         priority = abs(step[Agent.REWARD_INDEX])
-        self.memory.append(list(step) + [priority])
+        # Store the original index in the memory
+        memory_item = list(step) + [priority]
+        memory_item.append(len(self.memory))  # Add index to identify the item later
+        self.memory.append(memory_item)
         self.total_timesteps += 1
         self.episode_rewards.append(step[Agent.REWARD_INDEX])
 
@@ -446,7 +563,9 @@ class DeepQAgent(Agent):
             rarity_score = beta / (action_counts[action] + 1)
             # Basic priority: |reward| + rarity bonus (diversity and state rarity simplified)
             priority = abs(reward) + rarity_score
-            data_with_priority.append([state, action, reward, done, next_state, priority])
+            # Get the original index in memory
+            memory_idx = step[-1] if len(step) > 7 else 0
+            data_with_priority.append([state, action, reward, done, next_state, priority, memory_idx])
 
         # Sort by priority and select top 70%
         data_with_priority.sort(key=lambda x: x[5], reverse=True)
@@ -480,7 +599,7 @@ class DeepQAgent(Agent):
 
         # Combine top 70% and selected remaining
         final_data = top_data + selected_remaining
-        return [(i, d[0], d[1], d[2], d[3], d[4], d[5]) for i, d in enumerate(final_data)]
+        return final_data
 
     def prepareNetworkInputs(self, step):
         feature_vector = []
@@ -512,7 +631,7 @@ class DeepQAgent(Agent):
         if len(data) == 0:
             return model
         # Extract priorities and sample minibatch
-        priorities = [d[6] for d in data]
+        priorities = [d[5] for d in data]
         total_priority = sum(priorities)
         probabilities = [p / total_priority if total_priority > 0 else 1.0 / len(data) for p in priorities]
         max_samples = min(len(data), 256)  # Increased for better GPU utilization
@@ -523,7 +642,7 @@ class DeepQAgent(Agent):
         targets = []
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
         with tf.device(device):
-            for idx, state, action, reward, done, next_state, _ in minibatch:
+            for state, action, reward, done, next_state, _, memory_idx in minibatch:
                 modelOutput = model.predict(state)[0]
                 if not done:
                     # Requirement 2: Use target network for stability
@@ -538,9 +657,12 @@ class DeepQAgent(Agent):
                 # Requirement 6: Compute TD error for prioritization
                 predicted = modelOutput[action]
                 td_error = abs(target_q - predicted)
-                # Update priority in memory (memory stores step + priority)
-                memory_idx = self.memory[idx].index
-                self.memory[memory_idx][7] = td_error
+                
+                # Update priority in memory for experiences that are still in memory
+                for i, item in enumerate(self.memory):
+                    if len(item) > 7 and item[-1] == memory_idx:
+                        self.memory[i][-2] = td_error  # Update priority value
+                        break
 
             states = np.array(states)
             targets = np.array(targets)
@@ -562,19 +684,19 @@ class DeepQAgent(Agent):
             self.avg_loss_history.append(avg_loss)
         if hasattr(self, "updateEpsilon"):
             self.updateEpsilon()
-        self.saveModel()
-        self.saveStats()
-        self.printTrainingProgress()
-
-
-        # Then replace the learning rate decay code in reviewFight() with:
+        
+        # Learning rate decay
         if self.total_timesteps - self.last_lr_update >= self.lr_step_size:
             current_lr = K.get_value(self.model.optimizer.lr)
             new_lr = current_lr * self.lr_decay
             K.set_value(self.model.optimizer.lr, new_lr)
             print(f"Learning rate decayed to {new_lr} at {self.total_timesteps} timesteps")
             self.last_lr_update = self.total_timesteps
-
+        
+        # Make sure we call these methods AFTER updating all metrics
+        self.saveModel()
+        self.saveStats()
+        self.printTrainingProgress()
 
 from keras.utils import get_custom_objects
 get_custom_objects().update({"_huber_loss": DeepQAgent._huber_loss})

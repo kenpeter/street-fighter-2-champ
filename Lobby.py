@@ -10,6 +10,14 @@ from Discretizer import StreetFighter2Discretizer
 from myagent import DeepQAgent
 from tqdm import tqdm
 
+
+import os
+REQUIRED_DIRS = ["./models", "./logs", "./stats"]
+for directory in REQUIRED_DIRS:
+    os.makedirs(directory, exist_ok=True)
+    print(f"Ensured directory exists: {os.path.abspath(directory)}")
+    
+
 # Configure TensorFlow to use GPU
 physical_devices = tf.config.list_physical_devices("GPU")
 if len(physical_devices) > 0:
