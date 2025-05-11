@@ -687,7 +687,8 @@ class DeepQAgent(Agent):
         
         # Learning rate decay
         if self.total_timesteps - self.last_lr_update >= self.lr_step_size:
-            current_lr = K.get_value(self.model.optimizer.lr)
+            # current_lr = K.get_value(self.model.optimizer.lr)
+            current_lr = self.model.optimizer.learning_rate.numpy()
             new_lr = current_lr * self.lr_decay
             K.set_value(self.model.optimizer.lr, new_lr)
             print(f"Learning rate decayed to {new_lr} at {self.total_timesteps} timesteps")
