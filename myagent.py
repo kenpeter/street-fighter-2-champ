@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import random
-from collections import deque
 import tensorflow as tf
 from tensorflow.python import keras
 from keras.models import Sequential, load_model
@@ -14,6 +13,18 @@ from LossHistory import LossHistory
 import json
 import time
 import pickle
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("agent.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("Agent")
 
 print("TensorFlow version:", tf.__version__)
 print("Is GPU available:", bool(tf.config.list_physical_devices("GPU")))
@@ -30,6 +41,43 @@ else:
     print("No GPU devices found. Training will be slow on CPU only.")
     print("Make sure NVIDIA drivers and CUDA are properly installed.")
 
+class CircularBuffer:
+    """A circular buffer implementation for storing experiences efficiently."""
+    
+    def __init__(self, max_size):
+        self.max_size = max_size
+        self.buffer = [None] * max_size
+        self.current_index = 0
+        self.size = 0
+    
+    def append(self, item):
+        self.buffer[self.current_index] = item
+        self.current_index = (self.current_index + 1) % self.max_size
+        self.size = min(self.size + 1, self.max_size)
+    
+    def sample(self, batch_size, weights=None):
+        """Sample elements from buffer with optional weights for prioritization"""
+        if weights is not None:
+            # Sample with replacement based on weights
+            indices = random.choices(range(self.size), weights=weights[:self.size], k=min(batch_size, self.size))
+        else:
+            # Random sampling without replacement
+            indices = random.sample(range(self.size), min(batch_size, self.size))
+        return [self.buffer[i] for i in indices], indices
+    
+    def update_priorities(self, indices, priorities):
+        """Update priorities for specific indices"""
+        for idx, priority in zip(indices, priorities):
+            if self.buffer[idx] is not None:
+                self.buffer[idx][-1] = priority  # Update priority value
+    
+    def get_all(self):
+        """Return all valid entries in the buffer"""
+        return [self.buffer[i] for i in range(self.size) if self.buffer[i] is not None]
+    
+    def __len__(self):
+        return self.size
+
 class Agent:
     OBSERVATION_INDEX = 0
     STATE_INDEX = 1
@@ -38,6 +86,7 @@ class Agent:
     NEXT_OBSERVATION_INDEX = 4
     NEXT_STATE_INDEX = 5
     DONE_INDEX = 6
+    PRIORITY_INDEX = 7  # Added index for priority
     MAX_DATA_LENGTH = 200000  # Requirement 1: Increased from 50000 to 200000 (4x)
     DEFAULT_MODELS_DIR_PATH = "./models"
     DEFAULT_LOGS_DIR_PATH = "./logs"
@@ -50,22 +99,22 @@ class Agent:
             self.name = name
             
         # Get current directory for absolute paths
-        current_dir = os.path.dirname(os.path.abspath(__file__))
+        self.current_dir = os.path.dirname(os.path.abspath(__file__))
         
         # Update class variables with absolute paths
-        Agent.DEFAULT_MODELS_DIR_PATH = os.path.join(current_dir, "models")
-        Agent.DEFAULT_LOGS_DIR_PATH = os.path.join(current_dir, "logs")
-        Agent.DEFAULT_STATS_DIR_PATH = os.path.join(current_dir, "stats")
+        Agent.DEFAULT_MODELS_DIR_PATH = os.path.join(self.current_dir, "models")
+        Agent.DEFAULT_LOGS_DIR_PATH = os.path.join(self.current_dir, "logs")
+        Agent.DEFAULT_STATS_DIR_PATH = os.path.join(self.current_dir, "stats")
         
         # Create necessary directories with absolute paths
         os.makedirs(Agent.DEFAULT_MODELS_DIR_PATH, exist_ok=True)
         os.makedirs(Agent.DEFAULT_LOGS_DIR_PATH, exist_ok=True)
         os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
         
-        print(f"Agent {self.name} initialization:")
-        print(f"Models directory: {Agent.DEFAULT_MODELS_DIR_PATH}")
-        print(f"Logs directory: {Agent.DEFAULT_LOGS_DIR_PATH}")
-        print(f"Stats directory: {Agent.DEFAULT_STATS_DIR_PATH}")
+        logger.info(f"Agent {self.name} initialization:")
+        logger.info(f"Models directory: {Agent.DEFAULT_MODELS_DIR_PATH}")
+        logger.info(f"Logs directory: {Agent.DEFAULT_LOGS_DIR_PATH}")
+        logger.info(f"Stats directory: {Agent.DEFAULT_STATS_DIR_PATH}")
         
         self.prepareForNextFight()
         self.moveList = moveList
@@ -75,17 +124,24 @@ class Agent:
         self.avg_reward_history = []
         self.avg_loss_history = []
 
+        # Learning rate decay tracking
         self.lr_step_size = 10000  # Apply decay every 10,000 timesteps
         self.last_lr_update = 0  # Timestep of last update
-
+        
+        # Setup the model if this is a proper agent subclass
         if self.__class__.__name__ != "Agent":
             self.model = self.initializeNetwork()
+            # Resume training if requested
             if resume:
                 self.loadModel()
                 self.loadStats()
+                logger.info(f"Resumed training for {self.name} from existing model")
+            else:
+                logger.info(f"Starting fresh training for {self.name}")
 
     def prepareForNextFight(self):
-        self.memory = deque(maxlen=Agent.MAX_DATA_LENGTH)
+        # Use circular buffer instead of deque
+        self.memory = CircularBuffer(Agent.MAX_DATA_LENGTH)
         self.episode_rewards = []
 
     def getRandomMove(self, info):
@@ -119,7 +175,16 @@ class Agent:
             )
 
     def recordStep(self, step):
-        self.memory.append(step)
+        # Use a default priority initially based on reward magnitude
+        priority = abs(step[Agent.REWARD_INDEX]) + 0.01  # Small constant to avoid zero priority
+        
+        # Convert step to list to append priority
+        step_with_priority = list(step) + [priority]
+        
+        # Add to memory buffer
+        self.memory.append(step_with_priority)
+        
+        # Update counters
         self.total_timesteps += 1
         self.episode_rewards.append(step[Agent.REWARD_INDEX])
 
@@ -144,70 +209,67 @@ class Agent:
         self.printTrainingProgress()
 
     def loadModel(self):
-        # Get current directory for absolute paths
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # Make sure directories exist with absolute paths
-        models_dir = os.path.join(current_dir, "models")
+        # Use absolute path for model loading
+        models_dir = os.path.join(self.current_dir, "models")
         os.makedirs(models_dir, exist_ok=True)
         
         # Debug output
-        print(f"Looking for model files in: {models_dir}")
+        logger.info(f"Looking for model files in: {models_dir}")
         
-        # Fix path to look for models in different possible locations
-        model_paths = [
-            os.path.join(models_dir, f"{self.name}Model"),
-            os.path.join(current_dir, "models", f"{self.name}Model"),
-            os.path.join(current_dir, "..", "models", f"{self.name}Model")
-        ]
+        # Try loading with different extensions
+        model_path = os.path.join(models_dir, f"{self.getModelName()}")
+        load_successful = False
+        for ext in [".weights.h5", ".h5", ".keras"]:
+            full_path = model_path + ext
+            if os.path.exists(full_path):
+                logger.info(f"Found model file: {full_path}")
+                try:
+                    self.model.load_weights(full_path)
+                    load_successful = True
+                    logger.info(f"✓ Model loaded successfully from {full_path}!")
+                    break
+                except Exception as e:
+                    logger.error(f"Error loading model from {full_path}: {e}")
         
-        for base_path in model_paths:
-            for ext in [".keras", ".weights.h5", ".h5"]:
-                full_path = base_path + ext
-                if os.path.exists(full_path):
-                    print(f"Found model file: {full_path}")
-                    try:
-                        self.model.load_weights(full_path)
-                        print(f"✓ Model loaded successfully from {full_path}!")
-                        return
-                    except Exception as e:
-                        print(f"Error loading model from {full_path}: {e}")
+        # Sync target network if we have one and the model loaded successfully
+        if load_successful and hasattr(self, "target_model"):
+            self.target_model.set_weights(self.model.get_weights())
+            logger.info("Target network synchronized with loaded model weights")
         
-        print(f"No valid model file found, will use a new model.")
+        if not load_successful:
+            logger.warning(f"No valid model file found, will use a new model.")
 
     def saveModel(self):
         try:
-            # Ensure directory exists with explicit path
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            models_dir = os.path.join(current_dir, "models")
+            # Use consistent absolute path for model saving
+            models_dir = os.path.join(self.current_dir, "models")
             os.makedirs(models_dir, exist_ok=True)
             
-            # Get absolute path for model
+            # Save weights with consistent naming
             model_path = os.path.join(models_dir, f"{self.getModelName()}.weights.h5")
             
-            # Debug output
-            print(f"Attempting to save model to: {model_path}")
+            logger.info(f"Saving model to: {model_path}")
             
-            # Save model with error handling
+            # Save with error handling
             try:
                 self.model.save_weights(model_path)
-                print(f"✓ Model weights saved to {model_path}")
+                logger.info(f"✓ Model weights saved to {model_path}")
             except Exception as e:
-                print(f"Error saving model weights: {e}")
+                logger.error(f"Error saving model weights: {e}")
                 # Try alternate save method
+                alt_path = os.path.join(models_dir, f"{self.getModelName()}.keras")
                 try:
-                    alt_path = os.path.join(models_dir, f"{self.getModelName()}.keras")
                     self.model.save(alt_path)
-                    print(f"✓ Model saved using alternative method to {alt_path}")
+                    logger.info(f"✓ Model saved using alternative method to {alt_path}")
                 except Exception as e2:
-                    print(f"Alternative save also failed: {e2}")
+                    logger.error(f"Alternative save also failed: {e2}")
             
             # Save logs
-            logs_dir = os.path.join(current_dir, "logs")
+            logs_dir = os.path.join(self.current_dir, "logs")
             os.makedirs(logs_dir, exist_ok=True)
             logs_path = os.path.join(logs_dir, f"{self.getLogsName()}")
             
-            print(f"Attempting to save logs to: {logs_path}")
+            logger.info(f"Saving logs to: {logs_path}")
             with open(logs_path, "a+") as file:
                 if (
                     hasattr(self, "lossHistory")
@@ -216,85 +278,71 @@ class Agent:
                 ):
                     avg_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
                     file.write(f"{avg_loss}\n")
-                    print(f"✓ Logs saved to {logs_path}")
+                    logger.info(f"✓ Logs saved to {logs_path}")
         except Exception as e:
-            print(f"Critical error in saveModel: {e}")
+            logger.error(f"Critical error in saveModel: {e}")
             import traceback
-            traceback.print_exc()
+            logger.error(traceback.format_exc())
 
     def saveStats(self):
         try:
-            # Get current directory for absolute paths
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            
-            # Ensure stats directory exists with explicit path
-            stats_dir = os.path.join(current_dir, "stats")
+            # Use consistent absolute path for stats
+            stats_dir = os.path.join(self.current_dir, "stats")
             os.makedirs(stats_dir, exist_ok=True)
             
-            # Get absolute paths for files
+            # Save with consistent naming
             stats_path = os.path.join(stats_dir, f"{self.name}_stats.json")
             memory_path = os.path.join(stats_dir, f"{self.name}_memory.pkl")
             
-            # Debug output
-            print(f"Attempting to save stats to: {stats_path}")
-            print(f"Attempting to save memory to: {memory_path}")
+            logger.info(f"Saving stats to: {stats_path}")
+            logger.info(f"Saving memory to: {memory_path}")
             
-            # Prepare stats dict
+            # Gather all relevant state
             stats = {
                 "total_timesteps": self.total_timesteps,
                 "episodes_completed": self.episodes_completed,
                 "avg_reward_history": self.avg_reward_history,
                 "avg_loss_history": self.avg_loss_history,
-                "saved_epsilon": getattr(self, "epsilon", 0.9),
+                "last_lr_update": getattr(self, "last_lr_update", 0),
+                "episode_count": getattr(self, "episode_count", 0),  # For target network updates
             }
             
             # Save stats JSON
             try:
                 with open(stats_path, "w") as file:
                     json.dump(stats, file, indent=4)
-                print(f"✓ Stats saved to {stats_path}")
+                logger.info(f"✓ Stats saved to {stats_path}")
             except Exception as e:
-                print(f"Error saving stats to {stats_path}: {e}")
-                # Try alternate location in current directory
-                alt_path = os.path.join(current_dir, f"{self.name}_stats.json")
+                logger.error(f"Error saving stats to {stats_path}: {e}")
+                # Try alternate location
+                alt_path = os.path.join(self.current_dir, f"{self.name}_stats.json")
                 try:
                     with open(alt_path, "w") as file:
                         json.dump(stats, file, indent=4)
-                    print(f"✓ Stats saved to alternate location: {alt_path}")
+                    logger.info(f"✓ Stats saved to alternate location: {alt_path}")
                 except Exception as e2:
-                    print(f"Alternative stats save also failed: {e2}")
+                    logger.error(f"Alternative stats save also failed: {e2}")
 
             # Save memory buffer
             try:
                 with open(memory_path, "wb") as file:
-                    pickle.dump(self.memory, file)
-                print(f"✓ Memory buffer saved to {memory_path}")
+                    # Get all valid entries from the circular buffer
+                    memory_data = self.memory.get_all()
+                    pickle.dump(memory_data, file)
+                logger.info(f"✓ Memory buffer saved with {len(memory_data)} experiences")
             except Exception as e:
-                print(f"Error saving memory buffer to {memory_path}: {e}")
-                # Try alternate location in current directory
-                alt_memory_path = os.path.join(current_dir, f"{self.name}_memory.pkl")
-                try:
-                    with open(alt_memory_path, "wb") as file:
-                        pickle.dump(self.memory, file)
-                    print(f"✓ Memory saved to alternate location: {alt_memory_path}")
-                except Exception as e2:
-                    print(f"Alternative memory save also failed: {e2}")
+                logger.error(f"Error saving memory buffer: {e}")
         except Exception as e:
-            print(f"Critical error in saveStats: {e}")
+            logger.error(f"Critical error in saveStats: {e}")
             import traceback
-            traceback.print_exc()
+            logger.error(traceback.format_exc())
             
-    
     def loadStats(self):
-        # Get current directory for absolute paths
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # Make sure directories exist with absolute paths
-        stats_dir = os.path.join(current_dir, "stats")
+        # Use consistent absolute path for stats
+        stats_dir = os.path.join(self.current_dir, "stats")
         os.makedirs(stats_dir, exist_ok=True)
         
-        # Debug output
-        print(f"Looking for stats files in: {stats_dir}")
+        logger.info(f"Looking for stats files in: {stats_dir}")
         
         stats_path = os.path.join(stats_dir, f"{self.name}_stats.json")
         memory_path = os.path.join(stats_dir, f"{self.name}_memory.pkl")
@@ -308,94 +356,109 @@ class Agent:
                     self.episodes_completed = stats.get("episodes_completed", 0)
                     self.avg_reward_history = stats.get("avg_reward_history", [])
                     self.avg_loss_history = stats.get("avg_loss_history", [])
-                    if hasattr(self, "epsilon"):
-                        self.epsilon = stats.get("saved_epsilon", 0.9)
+                    self.last_lr_update = stats.get("last_lr_update", 0)
+                    
+                    # Set episode count for target network updates
+                    if hasattr(self, "episode_count"):
+                        self.episode_count = stats.get("episode_count", 0)
+                    
+                    # Calculate epsilon based on total timesteps
+                    if hasattr(self, "calculateEpsilonFromTimesteps"):
+                        self.calculateEpsilonFromTimesteps()
+                    
                     self.loaded_stats = True
-                    print(f"✓ Loaded training stats from {stats_path}")
-                    print(f"  - Timesteps: {self.total_timesteps}")
-                    print(f"  - Episodes: {self.episodes_completed}")
+                    logger.info(f"✓ Loaded training stats from {stats_path}")
+                    logger.info(f"  - Timesteps: {self.total_timesteps}")
+                    logger.info(f"  - Episodes: {self.episodes_completed}")
                     if hasattr(self, "epsilon"):
-                        print(f"  - Epsilon: {self.epsilon}")
+                        logger.info(f"  - Calculated epsilon: {self.epsilon}")
+                    if hasattr(self, "episode_count"):
+                        logger.info(f"  - Episode count (for target network): {self.episode_count}")
             except Exception as e:
-                print(f"Error loading stats from {stats_path}: {e}")
-                print("Starting with fresh training statistics.")
+                logger.error(f"Error loading stats from {stats_path}: {e}")
+                logger.warning("Starting with fresh training statistics.")
         else:
-            print(f"No stats file found at {stats_path}. Starting fresh.")
+            logger.warning(f"No stats file found at {stats_path}. Starting fresh.")
 
         if os.path.exists(memory_path):
             try:
                 with open(memory_path, "rb") as file:
-                    self.memory = pickle.load(file)
-                    print(f"✓ Loaded memory buffer from {memory_path} with {len(self.memory)} experiences")
+                    memory_data = pickle.load(file)
+                    # Initialize a new circular buffer
+                    self.memory = CircularBuffer(Agent.MAX_DATA_LENGTH)
+                    # Add each experience to the buffer
+                    for experience in memory_data:
+                        self.memory.append(experience)
+                    logger.info(f"✓ Loaded memory buffer with {len(memory_data)} experiences")
             except Exception as e:
-                print(f"Error loading memory buffer from {memory_path}: {e}")
-                self.memory = deque(maxlen=Agent.MAX_DATA_LENGTH)
+                logger.error(f"Error loading memory buffer: {e}")
+                self.memory = CircularBuffer(Agent.MAX_DATA_LENGTH)
         else:
-            self.memory = deque(maxlen=Agent.MAX_DATA_LENGTH)
-            print("No previous memory buffer found. Starting with empty buffer.")
+            self.memory = CircularBuffer(Agent.MAX_DATA_LENGTH)
+            logger.warning("No previous memory buffer found. Starting with empty buffer.")
 
     def printTrainingProgress(self):
         elapsed_time = time.time() - self.training_start_time
-        print("\n==== Training Progress ====")
-        print(f"Total timesteps: {self.total_timesteps}")
-        print(f"Episodes completed: {self.episodes_completed}")
-        print(f"Training time: {elapsed_time:.2f} seconds")
+        logger.info("\n==== Training Progress ====")
+        logger.info(f"Total timesteps: {self.total_timesteps}")
+        logger.info(f"Episodes completed: {self.episodes_completed}")
+        logger.info(f"Training time: {elapsed_time:.2f} seconds")
         if self.avg_reward_history:
-            print(f"Recent average reward: {self.avg_reward_history[-1]:.4f}")
+            logger.info(f"Recent average reward: {self.avg_reward_history[-1]:.4f}")
             if len(self.avg_reward_history) >= 2:
                 reward_change = (
                     self.avg_reward_history[-1] - self.avg_reward_history[-2]
                 )
-                print(f"Reward change: {reward_change:+.4f}")
+                logger.info(f"Reward change: {reward_change:+.4f}")
         if (
             hasattr(self, "lossHistory")
             and hasattr(self.lossHistory, "losses")
             and len(self.lossHistory.losses) > 0
         ):
             recent_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
-            print(f"Recent loss: {recent_loss:.6f}")
+            logger.info(f"Recent loss: {recent_loss:.6f}")
             if self.avg_loss_history and len(self.avg_loss_history) >= 2:
                 loss_change = self.avg_loss_history[-1] - self.avg_loss_history[-2]
-                print(f"Loss change: {loss_change:+.6f}")
+                logger.info(f"Loss change: {loss_change:+.6f}")
                 if abs(loss_change) < 0.0001 and self.episodes_completed > 5:
-                    print(
+                    logger.warning(
                         "WARNING: Training may be stuck in a local minimum - loss is not changing significantly"
                     )
                 elif loss_change < 0:
-                    print("Learning progress: Positive (loss is decreasing)")
+                    logger.info("Learning progress: Positive (loss is decreasing)")
                 else:
-                    print(
+                    logger.warning(
                         "Learning progress: Negative or stalled (loss is not decreasing)"
                     )
-        print("===========================\n")
+        logger.info("===========================\n")
 
     def printFinalStats(self):
         elapsed_time = time.time() - self.training_start_time
-        print("\n======= TRAINING SUMMARY =======")
-        print(f"Total training timesteps: {self.total_timesteps}")
-        print(f"Total episodes completed: {self.episodes_completed}")
-        print(f"Total training time: {elapsed_time:.2f} seconds")
+        logger.info("\n======= TRAINING SUMMARY =======")
+        logger.info(f"Total training timesteps: {self.total_timesteps}")
+        logger.info(f"Total episodes completed: {self.episodes_completed}")
+        logger.info(f"Total training time: {elapsed_time:.2f} seconds")
         if self.avg_reward_history:
-            print(f"Final average reward: {self.avg_reward_history[-1]:.4f}")
+            logger.info(f"Final average reward: {self.avg_reward_history[-1]:.4f}")
             if len(self.avg_reward_history) > 1:
                 first_rewards = sum(self.avg_reward_history[:3]) / min(3, len(self.avg_reward_history))
                 last_rewards = sum(self.avg_reward_history[-3:]) / min(3, len(self.avg_reward_history))
                 reward_improvement = last_rewards - first_rewards
-                print(f"Reward improvement: {reward_improvement:+.4f}")
+                logger.info(f"Reward improvement: {reward_improvement:+.4f}")
         if self.avg_loss_history:
-            print(f"Final average loss: {self.avg_loss_history[-1]:.6f}")
+            logger.info(f"Final average loss: {self.avg_loss_history[-1]:.6f}")
             if len(self.avg_loss_history) > 1:
                 first_losses = sum(self.avg_loss_history[:3]) / min(3, len(self.avg_loss_history))
                 last_losses = sum(self.avg_loss_history[-3:]) / min(3, len(self.avg_loss_history))
                 loss_improvement = first_losses - last_losses
-                print(f"Loss improvement: {loss_improvement:+.6f}")
+                logger.info(f"Loss improvement: {loss_improvement:+.6f}")
                 learning_status = (
                     "POSITIVE - Agent is learning effectively" if loss_improvement > 0 else
                     "NEUTRAL - Small improvements in learning" if loss_improvement > -0.001 else
                     "NEGATIVE - Agent may be stuck in suboptimal policy"
                 )
-                print(f"Learning status: {learning_status}")
-        print("=================================\n")
+                logger.info(f"Learning status: {learning_status}")
+        logger.info("=================================\n")
 
 
     def getModelName(self):
@@ -450,7 +513,6 @@ class DeepQAgent(Agent):
         self,
         stateSize=32,
         resume=False,
-        epsilon=None,
         name=None,
         moveList=Moves,
     ):
@@ -463,21 +525,25 @@ class DeepQAgent(Agent):
         self.episode_count = 0  # For target network updates
         self.update_target_every = 5  # Requirement 2: Update target network every 5 episodes
         self.lr_decay = 0.995  # Requirement 4: Learning rate decay factor
+        
         super(DeepQAgent, self).__init__(resume=resume, name=name, moveList=moveList)
+        
         # Requirement 2: Initialize target network
         self.target_model = self.initializeNetwork()
         self.target_model.set_weights(self.model.get_weights())
-        if epsilon is not None:
-            self.epsilon = epsilon
-            self.fixed_epsilon = True
+        
+        # Handle epsilon (exploration rate)
+        if resume and hasattr(self, "total_timesteps"):
+            # When resuming, calculate epsilon based on total timesteps
+            self.calculateEpsilonFromTimesteps()
+            logger.info(f"Resuming with calculated epsilon: {self.epsilon} based on {self.total_timesteps} timesteps")
         else:
-            if resume:  # Now properly handles resume flag
-                self.calculateEpsilonFromTimesteps()
-                print(f"Resuming training with epsilon {self.epsilon}")
-            else:
-                self.epsilon = 1.0  # Start with full exploration for new training
+            # Start fresh with full exploration
+            self.epsilon = 1.0
+            logger.info(f"Starting with new epsilon: {self.epsilon}")
 
     def calculateEpsilonFromTimesteps(self):
+        """Calculate epsilon based on the total training timesteps"""
         START_EPSILON = 1.0
         TIMESTEPS_TO_MIN_EPSILON = 500000
         decay_per_step = (
@@ -489,8 +555,12 @@ class DeepQAgent(Agent):
         )
 
     def updateEpsilon(self):
-        if not self.fixed_epsilon:
-            self.calculateEpsilonFromTimesteps()
+        """Update epsilon based on current training progress"""
+        old_epsilon = self.epsilon
+        self.calculateEpsilonFromTimesteps()
+        if abs(old_epsilon - self.epsilon) > 0.01:  # Only log if changed significantly
+            logger.info(f"Epsilon updated: {old_epsilon:.4f} -> {self.epsilon:.4f} at timestep {self.total_timesteps}")
+
 
     def getMove(self, obs, info):
         if np.random.rand() <= self.epsilon:
@@ -498,7 +568,8 @@ class DeepQAgent(Agent):
             return move, frameInputs
         else:
             stateData = self.prepareNetworkInputs(info)
-            with tf.device("/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"):
+            device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
+            with tf.device(device):
                 predictedRewards = self.model.predict(stateData)[0]
             move = np.argmax(predictedRewards)
             frameInputs = self.convertMoveToFrameInputs(list(self.moveList)[move], info)
@@ -526,74 +597,75 @@ class DeepQAgent(Agent):
                 loss=DeepQAgent._huber_loss,
                 optimizer=Adam(learning_rate=self.learningRate),
             )
-            print(f"Successfully initialized model on {device}")
+            logger.info(f"Successfully initialized model on {device}")
         return model
 
-    def recordStep(self, step):
-        # Append step with initial priority based on reward
-        priority = abs(step[Agent.REWARD_INDEX])
-        # Store the original index in the memory
-        memory_item = list(step) + [priority]
-        memory_item.append(len(self.memory))  # Add index to identify the item later
-        self.memory.append(memory_item)
-        self.total_timesteps += 1
-        self.episode_rewards.append(step[Agent.REWARD_INDEX])
-
     def prepareMemoryForTraining(self, memory):
-        # Requirement 5: Calculate action rarity, diversity, and rarity bonuses
+        # Get all experiences from the memory buffer
+        experiences = memory.get_all()
+        if not experiences:
+            return []
+            
+        # Calculate action counts for rarity bonuses
         action_counts = {}
-        for step in memory:
+        for step in experiences:
             action = step[Agent.ACTION_INDEX]
             action_counts[action] = action_counts.get(action, 0) + 1
-
-        # Compute priorities for all experiences
+            
+        # Compute priorities for each experience
         data_with_priority = []
         beta = 1.0  # Hyperparameter for action rarity weight
-        for step in memory:
+        
+        for step in experiences:
             state = self.prepareNetworkInputs(step[Agent.STATE_INDEX])
             action = step[Agent.ACTION_INDEX]
             reward = step[Agent.REWARD_INDEX]
             done = step[Agent.DONE_INDEX]
             next_state = self.prepareNetworkInputs(step[Agent.NEXT_STATE_INDEX])
-            # Action rarity: inverse frequency
-            rarity_score = beta / (action_counts[action] + 1)
-            # Basic priority: |reward| + rarity bonus (diversity and state rarity simplified)
+            
+            # Calculate action rarity: inverse frequency
+            total_experiences = len(experiences)
+            action_frequency = action_counts[action] / total_experiences
+            rarity_score = beta * (1.0 - action_frequency)
+            
+            # Priority combines reward magnitude and rarity
             priority = abs(reward) + rarity_score
-            # Get the original index in memory
-            memory_idx = step[-1] if len(step) > 7 else 0
-            data_with_priority.append([state, action, reward, done, next_state, priority, memory_idx])
-
+            
+            # Store along with experience
+            data_with_priority.append([state, action, reward, done, next_state, priority])
+            
         # Sort by priority and select top 70%
         data_with_priority.sort(key=lambda x: x[5], reverse=True)
         top_70_percent = int(0.7 * len(data_with_priority))
         top_data = data_with_priority[:top_70_percent]
         remaining_data = data_with_priority[top_70_percent:]
-
-        # Ensure diversity in remaining 30% by selecting unique states
-        selected_remaining = []
+        
+        # Select the remaining 30% to ensure diversity
+        # First, track seen states
         seen_states = set()
         for item in top_data:
-            state_tuple = tuple(item[0].flatten())
-            seen_states.add(state_tuple)
-
-        # From remaining, pick experiences with unique states
+            state_hash = hash(tuple(item[0].flatten().tolist()))
+            seen_states.add(state_hash)
+            
+        # From remaining, select experiences with unique states
+        selected_remaining = []
         for item in remaining_data:
-            state_tuple = tuple(item[0].flatten())
-            if state_tuple not in seen_states:
+            state_hash = hash(tuple(item[0].flatten().tolist()))
+            if state_hash not in seen_states:
                 selected_remaining.append(item)
-                seen_states.add(state_tuple)
-            if len(selected_remaining) >= int(0.3 * len(data_with_priority)):
+                seen_states.add(state_hash)
+                
+            # If we have enough, stop selection
+            if len(selected_remaining) >= min(int(0.3 * len(data_with_priority)), len(remaining_data)):
                 break
-
-        # If not enough unique states, fill with remaining data randomly
-        if len(selected_remaining) < int(0.3 * len(data_with_priority)):
-            needed = int(0.3 * len(data_with_priority)) - len(selected_remaining)
-            available = [x for x in remaining_data if tuple(x[0].flatten()) not in seen_states]
-            if available and needed > 0:
-                extra = random.sample(available, min(needed, len(available)))
-                selected_remaining.extend(extra)
-
-        # Combine top 70% and selected remaining
+                
+        # If we don't have enough unique states, add random ones
+        if len(selected_remaining) < min(int(0.3 * len(data_with_priority)), len(remaining_data)):
+            needed = min(int(0.3 * len(data_with_priority)), len(remaining_data)) - len(selected_remaining)
+            random_extra = random.sample(remaining_data, min(needed, len(remaining_data)))
+            selected_remaining.extend(random_extra)
+            
+        # Combine top 70% and selected remaining 30%
         final_data = top_data + selected_remaining
         return final_data
 
@@ -605,9 +677,15 @@ class DeepQAgent(Agent):
         feature_vector.append(step["enemy_x_position"])
         # e y
         feature_vector.append(step["enemy_y_position"])
+        
+        # Handle unknown status codes safely
+        enemy_status = step.get("enemy_status", 512)
+        player_status = step.get("status", 512)
+        
         oneHotEnemyState = [0] * len(DeepQAgent.stateIndices.keys())
-        if step["enemy_status"] not in DeepQAgent.doneKeys:
-            oneHotEnemyState[DeepQAgent.stateIndices[step["enemy_status"]]] = 1
+        state_index = DeepQAgent.stateIndices.get(enemy_status, 0)  # Default to first index if unknown
+        oneHotEnemyState[state_index] = 1
+        
         feature_vector += oneHotEnemyState
         oneHotEnemyChar = [0] * 8
         oneHotEnemyChar[step["enemy_character"]] = 1
@@ -615,87 +693,133 @@ class DeepQAgent(Agent):
         feature_vector.append(step["health"])
         feature_vector.append(step["x_position"])
         feature_vector.append(step["y_position"])
+        
         oneHotPlayerState = [0] * len(DeepQAgent.stateIndices.keys())
-        if step["status"] not in DeepQAgent.doneKeys:
-            oneHotPlayerState[DeepQAgent.stateIndices[step["status"]]] = 1
+        state_index = DeepQAgent.stateIndices.get(player_status, 0)  # Default to first index if unknown
+        oneHotPlayerState[state_index] = 1
+        
         feature_vector += oneHotPlayerState
         feature_vector = np.reshape(feature_vector, [1, self.stateSize])
         return feature_vector
 
     def trainNetwork(self, data, model):
-        # Requirement 6 & 7: Use TD error for prioritization, increase max_batches to 50
+        # If no data to train on, return original model
         if len(data) == 0:
+            logger.warning("No data available for training. Skipping.")
             return model
-        # Extract priorities and sample minibatch
-        priorities = [d[5] for d in data]
-        total_priority = sum(priorities)
-        probabilities = [p / total_priority if total_priority > 0 else 1.0 / len(data) for p in priorities]
-        max_samples = min(len(data), 256)  # Increased for better GPU utilization
-        minibatch_indices = random.choices(range(len(data)), weights=probabilities, k=max_samples)
-        minibatch = [data[i] for i in minibatch_indices]
-
+            
+        # Sample minibatch directly from memory with optional priorities
+        minibatch, buffer_indices = self.memory.sample(256)
+        
+        # Prepare data for training
         states = []
         targets = []
+        td_errors = []  # Store TD errors for priority updates
+        
+        # Choose the appropriate device
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
+        
         with tf.device(device):
-            for state, action, reward, done, next_state, _, memory_idx in minibatch:
-                modelOutput = model.predict(state)[0]
-                if not done:
-                    # Requirement 2: Use target network for stability
-                    target_next = self.target_model.predict(next_state)[0]
-                    target_q = reward + self.gamma * np.amax(target_next)
-                else:
-                    target_q = reward
-                target = modelOutput.copy()
-                target[action] = target_q
-                states.append(state[0])
-                targets.append(target)
-                # Requirement 6: Compute TD error for prioritization
-                predicted = modelOutput[action]
-                td_error = abs(target_q - predicted)
+            for index, step in enumerate(minibatch):
+                # Extract necessary components
+                observation = step[Agent.OBSERVATION_INDEX]
+                state = step[Agent.STATE_INDEX]
+                action = step[Agent.ACTION_INDEX]
+                reward = step[Agent.REWARD_INDEX]
+                next_observation = step[Agent.NEXT_OBSERVATION_INDEX]
+                next_state = step[Agent.NEXT_STATE_INDEX]
+                done = step[Agent.DONE_INDEX]
                 
-                # Update priority in memory for experiences that are still in memory
-                for i, item in enumerate(self.memory):
-                    if len(item) > 7 and item[-1] == memory_idx:
-                        self.memory[i][-2] = td_error  # Update priority value
-                        break
-
+                # Prepare state data for network input
+                state_data = self.prepareNetworkInputs(state)
+                next_state_data = self.prepareNetworkInputs(next_state)
+                
+                # Get current Q values
+                current_q_values = model.predict(state_data)[0]
+                
+                if not done:
+                    # Use target network for stable Q-value estimates
+                    target_q_values = self.target_model.predict(next_state_data)[0]
+                    # Calculate target using target network
+                    max_future_q = np.max(target_q_values)
+                    new_q = reward + self.gamma * max_future_q
+                else:
+                    # For terminal states, target is just the reward
+                    new_q = reward
+                
+                # Calculate TD error for priority update
+                old_q = current_q_values[action]
+                td_error = abs(new_q - old_q)
+                td_errors.append(td_error)
+                
+                # Update target for action taken
+                target = current_q_values.copy()
+                target[action] = new_q
+                
+                # Add to batch
+                states.append(state_data[0])
+                targets.append(target)
+            
+            # Convert to numpy arrays
             states = np.array(states)
             targets = np.array(targets)
-            # Requirement 7: Train on larger batch (max_batches concept integrated into single fit)
-            model.fit(states, targets, epochs=1, verbose=0, callbacks=[self.lossHistory])
+            
+            # Train model on batch
+            model.fit(
+                states, 
+                targets, 
+                batch_size=32,  # Use small batches for better GPU utilization
+                epochs=1, 
+                verbose=0, 
+                callbacks=[self.lossHistory]
+            )
+            
+            # Update priorities in the memory buffer based on TD errors
+            new_priorities = np.array(td_errors) + 1e-4  # Add small constant to avoid zero priorities
+            self.memory.update_priorities(buffer_indices, new_priorities)
+            
+            # For debugging
+            logger.debug(f"Average TD error: {np.mean(td_errors):.6f}")
+            
         return model
 
     def reviewFight(self):
         self.episode_count += 1
-        # Requirement 2: Update target network infrequently
+        
+        # Update the target network only periodically
         if self.episode_count % self.update_target_every == 0:
             self.target_model.set_weights(self.model.get_weights())
-            print(f"Target network updated at episode {self.episode_count}")
+            logger.info(f"Target network updated at episode {self.episode_count}")
+        
+        # Prepare data and train network
         data = self.prepareMemoryForTraining(self.memory)
         self.model = self.trainNetwork(data, self.model)
+        
+        # Update metrics
         self.updateEpisodeMetrics()
         if (hasattr(self, "lossHistory") and hasattr(self.lossHistory, "losses") and len(self.lossHistory.losses) > 0):
             avg_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
             self.avg_loss_history.append(avg_loss)
+        
+        # Update exploration rate
         if hasattr(self, "updateEpsilon"):
             self.updateEpsilon()
         
-        # Learning rate decay
-        if self.total_timesteps - self.last_lr_update >= self.lr_step_size:
-            # current_lr = K.get_value(self.model.optimizer.lr)
+        # Apply learning rate decay if needed
+        current_time = self.total_timesteps
+        if current_time - self.last_lr_update >= self.lr_step_size:
             current_lr = self.model.optimizer.learning_rate.numpy()
             new_lr = current_lr * self.lr_decay
-            # K.set_value(self.model.optimizer.lr, new_lr)
             self.model.optimizer.learning_rate.assign(new_lr)
-            print(f"Learning rate decayed to {new_lr} at {self.total_timesteps} timesteps")
-            self.last_lr_update = self.total_timesteps
+            logger.info(f"Learning rate decayed to {new_lr:.6f} at {current_time} timesteps")
+            self.last_lr_update = current_time
         
-        # Make sure we call these methods AFTER updating all metrics
+        # Save progress
         self.saveModel()
         self.saveStats()
         self.printTrainingProgress()
 
+# Register custom loss function
 from keras.utils import get_custom_objects
 get_custom_objects().update({"_huber_loss": DeepQAgent._huber_loss})
 
