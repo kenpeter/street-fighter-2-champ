@@ -447,39 +447,14 @@ class Lobby:
             self.lastReward += tempReward
         return info, obs
 
-    def executeTrainingRun(self, review=True, episodes=1, background_training=True):
+    def executeTrainingRun(self, review=True, episodes=1):
         start_time = time.time()
         self.training_stats["session_wins"] = 0
         self.training_stats["session_losses"] = 0
         self.training_stats["session_start_time"] = time.time()
 
-        def training_thread_function(agent):
-            try:
-                print("Starting training in background thread...")
-                if len(physical_devices) > 0:
-                    print("Using GPU for background training")
-                    with tf.device("/GPU:0"):
-                        agent.reviewFight()
-                else:
-                    agent.reviewFight()
-                print("Background training completed!")
-            except Exception as e:
-                print(f"Error during background training: {e}")
-                import traceback
-                traceback.print_exc()
-
-        if background_training and episodes > 1:
-            display_episode = random.randint(0, episodes - 1)
-            print(f"Will render episode {display_episode} while training in background")
-        else:
-            display_episode = 0
-
-        original_render = self.render
-
         for episodeNumber in tqdm(range(episodes), desc="Training Episodes"):
             print(f"\n=== Starting episode {episodeNumber+1}/{episodes} ===")
-            if background_training:
-                self.render = episodeNumber == display_episode
             states = Lobby.getStates()
             if not states:
                 print("No state files found. Creating a default state...")
@@ -513,20 +488,6 @@ class Lobby:
                         except:
                             pass
                     continue
-            if (
-                episodeNumber == display_episode
-                and background_training
-                and review
-                and self.players[0].__class__.__name__ != "Agent"
-            ):
-                import threading
-                training_thread = threading.Thread(
-                    target=training_thread_function, args=(self.players[0],)
-                )
-                training_thread.daemon = True
-                training_thread.start()
-
-        self.render = original_render
 
         if hasattr(self.players[0], "printFinalStats"):
             self.players[0].printFinalStats()
@@ -673,12 +634,6 @@ if __name__ == "__main__":
         help="Name of the instance that will be used when saving the model or its training logs",
     )
     parser.add_argument(
-        "-b",
-        "--background",
-        action="store_true",
-        help="Train in background while rendering a random episode",
-    )
-    parser.add_argument(
         "-re",
         "--resume",
         action="store_true",
@@ -719,6 +674,4 @@ if __name__ == "__main__":
     )
     lobby = Lobby(render=args.render)
     lobby.addPlayer(agent)
-    lobby.executeTrainingRun(
-        episodes=args.episodes, background_training=args.background
-    )
+    lobby.executeTrainingRun(episodes=args.episodes)
