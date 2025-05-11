@@ -43,7 +43,7 @@ class Agent:
     DEFAULT_LOGS_DIR_PATH = "./logs"
     DEFAULT_STATS_DIR_PATH = "./stats"
 
-    def __init__(self, load=False, name=None, moveList=Moves):
+    def __init__(self, resume=False, name=None, moveList=Moves):
         if name is None:
             self.name = self.__class__.__name__
         else:
@@ -80,7 +80,7 @@ class Agent:
 
         if self.__class__.__name__ != "Agent":
             self.model = self.initializeNetwork()
-            if load:
+            if resume:
                 self.loadModel()
                 self.loadStats()
 
@@ -449,7 +449,6 @@ class DeepQAgent(Agent):
     def __init__(
         self,
         stateSize=32,
-        load=False,
         resume=False,
         epsilon=None,
         name=None,
@@ -464,7 +463,7 @@ class DeepQAgent(Agent):
         self.episode_count = 0  # For target network updates
         self.update_target_every = 5  # Requirement 2: Update target network every 5 episodes
         self.lr_decay = 0.995  # Requirement 4: Learning rate decay factor
-        super(DeepQAgent, self).__init__(load=load, name=name, moveList=moveList)
+        super(DeepQAgent, self).__init__(resume=resume, name=name, moveList=moveList)
         # Requirement 2: Initialize target network
         self.target_model = self.initializeNetwork()
         self.target_model.set_weights(self.model.get_weights())
@@ -472,14 +471,11 @@ class DeepQAgent(Agent):
             self.epsilon = epsilon
             self.fixed_epsilon = True
         else:
-            self.fixed_epsilon = False
-            if load and not resume:
-                self.epsilon = DeepQAgent.EPSILON_MIN
-            else:
+            if resume:  # Now properly handles resume flag
                 self.calculateEpsilonFromTimesteps()
-                print(
-                    f"Epsilon set to {self.epsilon} based on {self.total_timesteps} total timesteps"
-                )
+                print(f"Resuming training with epsilon {self.epsilon}")
+            else:
+                self.epsilon = 1.0  # Start with full exploration for new training
 
     def calculateEpsilonFromTimesteps(self):
         START_EPSILON = 1.0
