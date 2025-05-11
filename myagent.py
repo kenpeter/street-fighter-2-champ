@@ -39,9 +39,9 @@ class Agent:
     NEXT_STATE_INDEX = 5
     DONE_INDEX = 6
     MAX_DATA_LENGTH = 200000  # Requirement 1: Increased from 50000 to 200000 (4x)
-    DEFAULT_MODELS_DIR_PATH = "../models"
-    DEFAULT_LOGS_DIR_PATH = "../logs"
-    DEFAULT_STATS_DIR_PATH = "../stats"
+    DEFAULT_MODELS_DIR_PATH = "./models"
+    DEFAULT_LOGS_DIR_PATH = "./logs"
+    DEFAULT_STATS_DIR_PATH = "./stats"
 
     def __init__(self, load=False, name=None, moveList=Moves):
         if name is None:
