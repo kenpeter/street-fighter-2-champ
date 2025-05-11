@@ -10,13 +10,11 @@ from Discretizer import StreetFighter2Discretizer
 from myagent import DeepQAgent
 from tqdm import tqdm
 
-
 import os
 REQUIRED_DIRS = ["./models", "./logs", "./stats"]
 for directory in REQUIRED_DIRS:
     os.makedirs(directory, exist_ok=True)
     print(f"Ensured directory exists: {os.path.abspath(directory)}")
-    
 
 # Configure TensorFlow to use GPU
 physical_devices = tf.config.list_physical_devices("GPU")
@@ -404,133 +402,6 @@ class Lobby:
                     self.environment = None
                 except:
                     pass
-        
-                """The Agent will load the specified save state and play through it until finished"""
-        try:
-            self.initEnvironment(state)
-            max_steps = 2000
-            step_count = 0
-            last_states = []  # Keep track of last few states before closure
-
-            while not self.done and step_count < max_steps:
-                step_count += 1
-                self.episode_steps += 1
-                self.training_stats["total_steps"] += 1
-
-                # Wrap prediction in GPU context if GPU is available
-                if len(physical_devices) > 0:
-                    with tf.device("/GPU:0"):
-                        self.lastAction, self.frameInputs = self.players[0].getMove(
-                            self.lastObservation, self.lastInfo
-                        )
-                else:
-                    self.lastAction, self.frameInputs = self.players[0].getMove(
-                        self.lastObservation, self.lastInfo
-                    )
-
-                self.lastReward = 0
-
-                # Add more detailed exception handling for enterFrameInputs
-                try:
-                    info, obs = self.enterFrameInputs()
-                except Exception as e:
-                    print(f"ERROR during frame inputs: {e}")
-                    import traceback
-
-                    traceback.print_exc()
-                    print(f"Last known state before error: {self.lastInfo}")
-                    self.done = True
-                    break
-
-                # Record state for diagnostics
-                state_log = self.monitor_game_state(info, step_count)
-                if state_log:
-                    last_states.append(state_log)
-                    if len(last_states) > 5:  # Keep only the last 5 states
-                        last_states.pop(0)
-
-                # Track episode reward
-                self.episode_reward += self.lastReward
-
-                self.players[0].recordStep(
-                    (
-                        self.lastObservation,
-                        self.lastInfo,
-                        self.lastAction,
-                        self.lastReward,
-                        obs,
-                        info,
-                        self.done,
-                    )
-                )
-                self.lastObservation, self.lastInfo = [obs, info]
-
-                if step_count % 100 == 0:
-                    print(
-                        f"Step {step_count}, Player health: {info['health']}, Enemy health: {info['enemy_health']}"
-                    )
-
-            # If game closed unexpectedly (not at max_steps and not properly finished)
-            if self.done and step_count < max_steps:
-                print("\n===== GAME CLOSED UNEXPECTEDLY =====")
-                print(f"Steps completed: {step_count}/{max_steps}")
-                print(
-                    f"Last known player health: {self.lastInfo.get('health', 'Unknown')}"
-                )
-                print(
-                    f"Last known enemy health: {self.lastInfo.get('enemy_health', 'Unknown')}"
-                )
-                print(
-                    f"Last known player status: {self.lastInfo.get('status', 'Unknown')}"
-                )
-                print(
-                    f"Last known enemy status: {self.lastInfo.get('enemy_status', 'Unknown')}"
-                )
-                print("\nState history before closure:")
-                for i, state in enumerate(last_states):
-                    print(f"  State {i+1}: {state}")
-                print("==============================\n")
-
-            # Update episode statistics
-            self.training_stats["episodes_run"] += 1
-            self.training_stats["episode_rewards"].append(self.episode_reward)
-
-            # Determine win/loss by comparing health
-            if self.lastInfo.get("health", 0) > self.lastInfo.get("enemy_health", 0):
-                self.training_stats["wins"] += 1
-                self.training_stats["session_wins"] += 1
-                print("Episode result: WIN")
-            else:
-                self.training_stats["losses"] += 1
-                self.training_stats["session_losses"] += 1
-                print("Episode result: LOSS")
-
-            print(f"Episode steps: {self.episode_steps}")
-            print(f"Episode reward: {self.episode_reward}")
-            print(f"Total steps so far: {self.training_stats['total_steps']}")
-
-            if step_count >= max_steps:
-                print(
-                    "WARNING: Episode terminated due to step limit, not game completion"
-                )
-            else:
-                print("Episode completed naturally")
-
-            if self.environment is not None:
-                try:
-                    self.environment.close()
-                    self.environment = None
-                except:
-                    pass
-
-        except Exception as e:
-            print(f"Error playing state {state}: {e}")
-            if self.environment is not None:
-                try:
-                    self.environment.close()
-                    self.environment = None
-                except:
-                    pass
 
     def ensureRequiredKeys(self, info):
         required_keys = {
@@ -627,7 +498,6 @@ class Lobby:
                 print(f"Loading state: {state}")
                 try:
                     self.play(state=state)
-                    # Call reviewFight after each play(state) to update metrics per episode
                     if review and self.players[0].__class__.__name__ != "Agent":
                         if len(physical_devices) > 0:
                             with tf.device("/GPU:0"):
@@ -643,7 +513,6 @@ class Lobby:
                         except:
                             pass
                     continue
-            # Background training for display episode (optional)
             if (
                 episodeNumber == display_episode
                 and background_training
@@ -790,12 +659,6 @@ if __name__ == "__main__":
         help="Boolean flag for if the user wants the game environment to render during play",
     )
     parser.add_argument(
-        "-l",
-        "--load",
-        action="store_true",
-        help="Boolean flag for if the user wants to load pre-existing weights",
-    )
-    parser.add_argument(
         "-e",
         "--episodes",
         type=int,
@@ -819,7 +682,7 @@ if __name__ == "__main__":
         "-re",
         "--resume",
         action="store_true",
-        help="Boolean flag for loading a pre-existing model but with higher exploration for continued training",
+        help="Boolean flag for loading a pre-existing model and stats with higher exploration for continued training",
     )
     parser.add_argument(
         "--create-state",
@@ -850,7 +713,6 @@ if __name__ == "__main__":
         print("Creating default state...")
         create_default_state()
     agent = DeepQAgent(
-        load=args.load,
         resume=args.resume,
         epsilon=args.epsilon,
         name=args.name,
