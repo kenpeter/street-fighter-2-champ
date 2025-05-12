@@ -1023,7 +1023,6 @@ class DeepQAgent(Agent):
                 move, frameInputs = self.getRandomMove(info)
                 return move, frameInputs
         
-    
     # 1. Network Architecture & Learning Rate - Enhanced initializeNetwork method
     def initializeNetwork(self):
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
