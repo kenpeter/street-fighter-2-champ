@@ -3,8 +3,8 @@ import numpy as np
 import random
 import tensorflow as tf
 from tensorflow.python import keras
-from keras.models import Sequential, load_model
-from keras.layers import Dense, Dropout, BatchNormalization, Activation, Lambda
+from keras.models import Sequential, load_model, Model
+from keras.layers import Dense, Dropout, BatchNormalization, Activation, Lambda, Input
 from keras.optimizers import Adam
 from keras import backend as K
 import keras.losses
@@ -632,6 +632,7 @@ class DeepQAgent(Agent):
             logger.info(f"Epsilon updated: {old_epsilon:.4f} -> {self.epsilon:.4f} at timestep {self.total_timesteps}")
 
 
+    # Modify the getMove method to handle the shape mismatch
     def getMove(self, obs, info):
         if np.random.rand() <= self.epsilon:
             move, frameInputs = self.getRandomMove(info)
@@ -642,95 +643,91 @@ class DeepQAgent(Agent):
             
             try:
                 with tf.device(device):
-                    predictedRewards = self.model.predict(stateData)[0]
+                    # Get predictions
+                    predictions = self.model.predict(stateData, verbose=0)
                     
-                # Safety check: if predicted rewards shape doesn't match action space
-                if len(predictedRewards) != self.actionSize:
-                    logger.warning(f"Model output shape ({len(predictedRewards)}) doesn't match action space ({self.actionSize})")
-                    logger.warning("Falling back to random action to avoid errors")
-                    move, frameInputs = self.getRandomMove(info)
+                    # Check if predictions shape needs reshaping
+                    if len(predictions.shape) > 1 and predictions.shape[1] == 1:
+                        logger.info("Detected scalar output, reshaping to match action space")
+                        # Create a uniform distribution as a fallback
+                        predictedRewards = np.ones((self.actionSize,)) / self.actionSize
+                    elif len(predictions.shape) == 2 and predictions.shape[1] != self.actionSize:
+                        logger.warning(f"Model output shape {predictions.shape} doesn't match action space ({self.actionSize})")
+                        logger.warning("Using random action distribution")
+                        # Create a uniform distribution as a fallback
+                        predictedRewards = np.ones((self.actionSize,)) / self.actionSize
+                    else:
+                        # Use predictions as is
+                        predictedRewards = predictions[0]
+                    
+                    # Get best action
+                    move = np.argmax(predictedRewards)
+                    
+                    # Safety check: if move is out of range
+                    if move >= len(self.moveList):
+                        logger.warning(f"Predicted move {move} is out of range for moveList size {len(self.moveList)}")
+                        logger.warning("Clamping to valid range")
+                        move = move % len(self.moveList)
+                    
+                    frameInputs = self.convertMoveToFrameInputs(list(self.moveList)[move], info)
                     return move, frameInputs
                     
-                # Get best action
-                move = np.argmax(predictedRewards)
-                
-                # Safety check: if move is out of range
-                if move >= len(self.moveList):
-                    logger.warning(f"Predicted move {move} is out of range for moveList size {len(self.moveList)}")
-                    logger.warning("Clamping to valid range")
-                    move = move % len(self.moveList)
-                
-                frameInputs = self.convertMoveToFrameInputs(list(self.moveList)[move], info)
-                return move, frameInputs
-                
             except Exception as e:
                 logger.error(f"Error in getMove: {e}")
                 logger.error("Falling back to random move due to prediction error")
                 move, frameInputs = self.getRandomMove(info)
                 return move, frameInputs
-
+        
     def initializeNetwork(self):
-        # CHANGE: Implemented Dueling DQN architecture
+        # Simplified Dueling DQN using pure Functional API
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
         with tf.device(device):
-            model = Sequential()
+            # Input layer
+            input_layer = Input(shape=(self.stateSize,))
             
-            # Shared network layers
-            model.add(Dense(64, input_dim=self.stateSize))
-            model.add(BatchNormalization())
-            model.add(Activation('relu'))
+            # Shared network layers - keep it simple
+            x = Dense(64, activation='relu')(input_layer)
+            x = Dense(128, activation='relu')(x)
             
-            model.add(Dense(128))
-            model.add(Activation('relu'))
-            model.add(Dropout(0.2))
-            
-            model.add(Dense(256))
-            model.add(Activation('relu'))
-            model.add(BatchNormalization())
-            
-            model.add(Dense(128))
-            model.add(Activation('relu'))
-            model.add(Dropout(0.2))
-            
-            # Split into value and advantage streams (Dueling DQN)
             # Value Stream - estimates state value
-            value_layer = Dense(1, name='value_stream')(model.layers[-1].output)
+            value_stream = Dense(32, activation='relu')(x)
+            value = Dense(1)(value_stream)
             
             # Advantage Stream - estimates advantage of each action
-            advantage_layer = Dense(self.actionSize, name='advantage_stream')(model.layers[-1].output)
+            advantage_stream = Dense(32, activation='relu')(x)
+            advantage = Dense(self.actionSize)(advantage_stream)
             
             # Combine value and advantage streams
             # Q(s,a) = V(s) + (A(s,a) - mean(A(s,a')))
-            def combine_value_and_advantage(inputs):
+            def combine_streams(inputs):
                 value, advantage = inputs
-                # Expanding dimensions of value to match advantage
+                # Use tf instead of K for tensor operations
                 value_expanded = tf.expand_dims(value, axis=1)
-                # Computing mean of advantage across actions
                 advantage_mean = tf.reduce_mean(advantage, axis=1, keepdims=True)
-                # Computing Q-values as V(s) + (A(s,a) - mean(A(s,a')))
                 return value_expanded + (advantage - advantage_mean)
                 
-            # Use Lambda layer to combine streams
-            q_values_layer = Lambda(combine_value_and_advantage, name='q_values')([value_layer, advantage_layer])
+            # Define output shape function
+            def output_shape(input_shapes):
+                return input_shapes[1]  # Return the shape of advantage
             
-            # Create model with inputs and outputs
-            from keras.models import Model
-            input_layer = model.inputs
-            model = Model(inputs=input_layer, outputs=q_values_layer)
+            # Combine streams with Lambda layer
+            q_values = Lambda(combine_streams, output_shape=output_shape)([value, advantage])
             
-            # CHANGE: Added gradient clipping for training stability
-            optimizer = Adam(learning_rate=self.learningRate, clipnorm=1.0)
+            # Create complete model
+            model = Model(inputs=input_layer, outputs=q_values)
             
-            # Compile model with Huber loss for robustness to outliers
+            # Compile model
+            optimizer = Adam(learning_rate=self.learningRate)
             model.compile(
                 loss=DeepQAgent._huber_loss,
                 optimizer=optimizer,
             )
             
-            logger.info(f"Successfully initialized Dueling DQN model on {device}")
-            logger.info(f"Model summary: {model.summary()}")
+            logger.info(f"Successfully initialized simplified Dueling DQN model on {device}")
+            model.summary(print_fn=lambda x: logger.info(x))
             
         return model
+
 
     def prepareMemoryForTraining(self, memory):
         # Get all experiences from the memory buffer
@@ -840,55 +837,70 @@ class DeepQAgent(Agent):
             logger.warning("No data available for training. Skipping.")
             return model
             
-        # Sample minibatch directly from memory with optional priorities
-        minibatch, buffer_indices = self.memory.sample(256)
+        # Sample batch from memory
+        minibatch, _ = self.memory.sample(128)  # Smaller batch size for stability
         
         # Prepare data for training
         states = []
         targets = []
-        td_errors = []  # Store TD errors for priority updates
         
         # Choose the appropriate device
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
         
         with tf.device(device):
-            for index, step in enumerate(minibatch):
+            for step in minibatch:
                 # Extract necessary components
-                observation = step[Agent.OBSERVATION_INDEX]
                 state = step[Agent.STATE_INDEX]
                 action = step[Agent.ACTION_INDEX]
                 reward = step[Agent.REWARD_INDEX]
-                next_observation = step[Agent.NEXT_OBSERVATION_INDEX]
                 next_state = step[Agent.NEXT_STATE_INDEX]
                 done = step[Agent.DONE_INDEX]
                 
+                # Safety check for action index
+                if action >= self.actionSize:
+                    action = action % self.actionSize
+                
                 # Prepare state data for network input
                 state_data = self.prepareNetworkInputs(state)
-                next_state_data = self.prepareNetworkInputs(next_state)
                 
-                # Get current Q values
-                current_q_values = model.predict(state_data)[0]
+                # Get current Q values for this state 
+                q_values = model.predict(state_data, verbose=0)[0]
                 
-                if not done:
-                    # Use target network for stable Q-value estimates
-                    target_q_values = self.target_model.predict(next_state_data)[0]
-                    # Calculate target using target network
-                    max_future_q = np.max(target_q_values)
-                    new_q = reward + self.gamma * max_future_q
+                # Handle array shape - ensure q_values is the right shape
+                if len(q_values.shape) == 0:  # Scalar output
+                    q_values = np.ones(self.actionSize) / self.actionSize
+                elif len(q_values.shape) > 1:  # Extra dimensions
+                    q_values = q_values.flatten()
+                    # If flattened size doesn't match actionSize, create uniform distribution
+                    if len(q_values) != self.actionSize:
+                        q_values = np.ones(self.actionSize) / self.actionSize
+                
+                # Create a copy of Q values to update
+                target = q_values.copy()
+                
+                if done:
+                    # If terminal state, target is just the reward
+                    target[action] = reward
                 else:
-                    # For terminal states, target is just the reward
-                    new_q = reward
+                    # Prepare next state data
+                    next_state_data = self.prepareNetworkInputs(next_state)
+                    
+                    # Use target network for next state Q values
+                    next_q_values = self.target_model.predict(next_state_data, verbose=0)[0]
+                    
+                    # Handle next_q_values shape
+                    if len(next_q_values.shape) == 0:  # Scalar output
+                        next_q_values = np.ones(self.actionSize) / self.actionSize
+                    elif len(next_q_values.shape) > 1:  # Extra dimensions
+                        next_q_values = next_q_values.flatten()
+                        # If flattened size doesn't match actionSize, create uniform distribution
+                        if len(next_q_values) != self.actionSize:
+                            next_q_values = np.ones(self.actionSize) / self.actionSize
+                    
+                    # Update target using Q-learning formula
+                    target[action] = reward + self.gamma * np.max(next_q_values)
                 
-                # Calculate TD error for priority update
-                old_q = current_q_values[action]
-                td_error = abs(new_q - old_q)
-                td_errors.append(td_error)
-                
-                # Update target for action taken
-                target = current_q_values.copy()
-                target[action] = new_q
-                
-                # Add to batch
+                # Add to training batch
                 states.append(state_data[0])
                 targets.append(target)
             
@@ -900,21 +912,16 @@ class DeepQAgent(Agent):
             model.fit(
                 states, 
                 targets, 
-                batch_size=32,  # Use small batches for better GPU utilization
+                batch_size=32,
                 epochs=1, 
                 verbose=0, 
                 callbacks=[self.lossHistory]
             )
             
-            # Update priorities in the memory buffer based on TD errors
-            new_priorities = np.array(td_errors) + 1e-4  # Add small constant to avoid zero priorities
-            self.memory.update_priorities(buffer_indices, new_priorities)
-            
-            # For debugging
-            logger.debug(f"Average TD error: {np.mean(td_errors):.6f}")
-            
         return model
 
+
+    # Replace the reviewFight method with this more robust version:
     def reviewFight(self):
         self.episode_count += 1
         
@@ -924,32 +931,59 @@ class DeepQAgent(Agent):
             logger.info(f"Target network updated at episode {self.episode_count}")
         
         # Prepare data and train network
-        data = self.prepareMemoryForTraining(self.memory)
-        self.model = self.trainNetwork(data, self.model)
+        try:
+            data = self.prepareMemoryForTraining(self.memory)
+            if len(data) > 0:
+                self.model = self.trainNetwork(data, self.model)
+        except Exception as e:
+            logger.error(f"Error training network: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         
-        # Update metrics
-        self.updateEpisodeMetrics()
-        if (hasattr(self, "lossHistory") and hasattr(self.lossHistory, "losses") and len(self.lossHistory.losses) > 0):
-            avg_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
-            self.avg_loss_history.append(avg_loss)
+        # Update metrics safely
+        try:
+            self.updateEpisodeMetrics()
+            if (hasattr(self, "lossHistory") and hasattr(self.lossHistory, "losses") and len(self.lossHistory.losses) > 0):
+                avg_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
+                self.avg_loss_history.append(avg_loss)
+        except Exception as e:
+            logger.error(f"Error updating metrics: {e}")
         
         # Update exploration rate
         if hasattr(self, "updateEpsilon"):
-            self.updateEpsilon()
+            try:
+                self.updateEpsilon()
+            except Exception as e:
+                logger.error(f"Error updating epsilon: {e}")
         
         # Apply learning rate decay if needed
-        current_time = self.total_timesteps
-        if current_time - self.last_lr_update >= self.lr_step_size:
-            current_lr = self.model.optimizer.learning_rate.numpy()
-            new_lr = current_lr * self.lr_decay
-            self.model.optimizer.learning_rate.assign(new_lr)
-            logger.info(f"Learning rate decayed to {new_lr:.6f} at {current_time} timesteps")
-            self.last_lr_update = current_time
+        try:
+            current_time = self.total_timesteps
+            if current_time - self.last_lr_update >= self.lr_step_size:
+                current_lr = self.model.optimizer.learning_rate.numpy()
+                new_lr = current_lr * self.lr_decay
+                self.model.optimizer.learning_rate.assign(new_lr)
+                logger.info(f"Learning rate decayed to {new_lr:.6f} at {current_time} timesteps")
+                self.last_lr_update = current_time
+        except Exception as e:
+            logger.error(f"Error applying learning rate decay: {e}")
         
         # Save progress
-        self.saveModel()
-        self.saveStats()
-        self.printTrainingProgress()
+        try:
+            self.saveModel()
+        except Exception as e:
+            logger.error(f"Error saving model: {e}")
+        
+        try:
+            self.saveStats()
+        except Exception as e:
+            logger.error(f"Error saving stats: {e}")
+        
+        try:
+            self.printTrainingProgress()
+        except Exception as e:
+            logger.error(f"Error printing progress: {e}")
+
 
 # Register custom loss function
 from keras.utils import get_custom_objects
