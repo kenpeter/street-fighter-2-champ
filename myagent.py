@@ -1032,17 +1032,29 @@ class DeepQAgent(Agent):
             input_layer = Input(shape=(self.stateSize,))
             normalized = BatchNormalization()(input_layer)
             
-            # Enhanced architecture with better capacity
-            x = Dense(128, activation='relu')(normalized)
-            x = Dropout(0.2)(x)  # Add dropout for regularization
-            x = Dense(64, activation='relu')(x)
+            # Massively enhanced architecture with 4096 neurons
+            x = Dense(4096, activation='relu')(normalized)  # First layer with 4096 neurons
+            x = Dropout(0.4)(x)  # Increased dropout to prevent overfitting with the large network
+            x = BatchNormalization()(x)  # Added normalization to stabilize large layer training
+            
+            x = Dense(2048, activation='relu')(x)  # Second layer with 2048 neurons
+            x = Dropout(0.3)(x)
             x = BatchNormalization()(x)
             
+            x = Dense(1024, activation='relu')(x)  # Third layer with 1024 neurons
+            x = Dropout(0.3)(x)
+            x = BatchNormalization()(x)
+            
+            x = Dense(512, activation='relu')(x)  # Fourth layer with 512 neurons
+            x = Dropout(0.2)(x)
+            
             # Dueling Architecture - enhanced value and advantage streams
-            value_stream = Dense(32, activation='relu')(x)
+            value_stream = Dense(256, activation='relu')(x)  # Increased to 256 neurons
+            value_stream = Dropout(0.2)(value_stream)
             value = Dense(1)(value_stream)
             
-            advantage_stream = Dense(32, activation='relu')(x)
+            advantage_stream = Dense(256, activation='relu')(x)  # Increased to 256 neurons
+            advantage_stream = Dropout(0.2)(advantage_stream)
             advantage = Dense(self.actionSize)(advantage_stream)
             
             # Combine streams with improved numerical stability
@@ -1057,16 +1069,18 @@ class DeepQAgent(Agent):
             
             q_values = Lambda(combine_streams, output_shape=output_shape)([value, advantage])
             
-            # Create model with adjusted learning rate for better stability
+            # Create model with adjusted learning rate for better stability with large network
             model = Model(inputs=input_layer, outputs=q_values)
             
-            # Better balanced learning rate with gradient clipping
-            optimizer = Adam(learning_rate=0.00025, clipnorm=1.0)
+            # Further reduce learning rate for the much larger network
+            optimizer = Adam(learning_rate=0.0001, clipnorm=1.0)  # Lower learning rate with gradient norm clipping only
             model.compile(
                 loss=_huber_loss,
                 optimizer=optimizer,
             )
             
-            logger.info(f"Initialized enhanced DQN model with optimized architecture")
+            # Calculate approximate parameter count for logging
+            params = sum([np.prod(w.shape) for w in model.trainable_weights])
+            logger.info(f"Initialized massive DQN model with 4096-neuron architecture (~{params:,} parameters)")
             
         return model
