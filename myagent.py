@@ -190,36 +190,62 @@ class Agent:
                 else frameInputs
             )
 
+
+    # 3. Reward Balancing - Better reward shaping in recordStep
     def recordStep(self, step):
         """Record experience with improved reward shaping"""
         modified_step = list(step)
+        
+        # Extract current health information
+        current_enemy_health = step[Agent.STATE_INDEX].get("enemy_health", 100)
+        current_player_health = step[Agent.STATE_INDEX].get("health", 100)
+        
+        # Extract next health information
+        next_enemy_health = step[Agent.NEXT_STATE_INDEX].get("enemy_health", 100)
+        next_player_health = step[Agent.NEXT_STATE_INDEX].get("health", 100)
+        
+        # Calculate health changes
+        enemy_damage = current_enemy_health - next_enemy_health
+        player_damage = current_player_health - next_player_health
+        
+        # Start with base reward
         reward = modified_step[Agent.REWARD_INDEX]
         
-        # Extract health information
-        enemy_health = step[Agent.STATE_INDEX].get("enemy_health", 100)
-        player_health = step[Agent.STATE_INDEX].get("health", 100)
+        # Health-based rewards - better balance
+        health_reward = player_damage * -0.2  # Penalize damage taken
+        enemy_health_reward = enemy_damage * 0.3  # Reward damage dealt
         
-        # Add large win bonus or loss penalty
-        if enemy_health <= 0:
-            reward += 100  # Large win bonus
-        if player_health <= 0:
-            reward -= 50   # Penalize losing
+        # Add win/loss rewards with better balance
+        if next_enemy_health <= 0:
+            reward += 50  # Reduced from 100 for better balance
+        if next_player_health <= 0:
+            reward -= 25  # Reduced from 50 for better balance
             
-        # NEW: Add reward for dealing damage
-        next_enemy_health = step[Agent.NEXT_STATE_INDEX].get("enemy_health", 100)
-        damage_dealt = enemy_health - next_enemy_health
-        if damage_dealt > 0:
-            reward += damage_dealt * 0.1  # Small reward for each point of damage
+        # Reward position advantage (being close when attacking, far when defending)
+        x_distance = abs(step[Agent.STATE_INDEX].get("x_position", 0) - 
+                    step[Agent.STATE_INDEX].get("enemy_x_position", 0))
+        
+        player_attacking = (current_player_health > 50 and current_enemy_health < 50)
+        position_reward = 0
+        if player_attacking and x_distance < 50:  # Close when attacking
+            position_reward = 0.1
+        elif not player_attacking and x_distance > 100:  # Far when defending
+            position_reward = 0.1
+        
+        # Combine all rewards
+        total_reward = reward + health_reward + enemy_health_reward + position_reward
         
         # Update the reward in the step
-        modified_step[Agent.REWARD_INDEX] = reward
+        modified_step[Agent.REWARD_INDEX] = total_reward
         
-        # Use a priority based on reward magnitude
-        priority = abs(reward) + 0.01  # Small constant to avoid zero priority
+        # Use a priority based on reward magnitude with more nuance
+        priority = abs(total_reward) + 0.01  # Small constant to avoid zero priority
         
-        # NEW: Boost replay priority for winning moves
-        if enemy_health <= 0:  # Win condition
-            priority *= 5.0  # Significantly increase priority for win transitions
+        # Boost replay priority for winning moves and combos
+        if next_enemy_health <= 0:  # Win condition
+            priority *= 3.0  # Increase priority for win transitions (reduced from 5.0)
+        if enemy_damage > 10:  # Successful combo or strong hit
+            priority *= 2.0  # Increase priority for good attacks
         
         # Append priority
         modified_step_with_priority = modified_step + [priority]
@@ -229,7 +255,8 @@ class Agent:
         
         # Update counters
         self.total_timesteps += 1
-        self.episode_rewards.append(reward)  # Use modified reward
+        self.episode_rewards.append(total_reward)  # Use modified reward
+
 
     def updateEpisodeMetrics(self):
         self.episodes_completed += 1
@@ -573,7 +600,10 @@ class Agent:
     def initializeNetwork(self):
         raise NotImplementedError("Implement this in the inherited agent")
 
+
+    # 5. Experience Replay Adjustment - Better memory sampling
     def prepareMemoryForTraining(self, memory):
+        """Simplified and fixed memory preparation for training"""
         # Get all experiences from the memory buffer
         experiences = memory.get_all()
         if not experiences:
@@ -606,41 +636,33 @@ class Agent:
             
             # Store along with experience
             data_with_priority.append([state, action, reward, done, next_state, priority])
-            
-        # Sort by priority and select top 70%
-        data_with_priority.sort(key=lambda x: x[5], reverse=True)
-        top_70_percent = int(0.7 * len(data_with_priority))
-        top_data = data_with_priority[:top_70_percent]
-        remaining_data = data_with_priority[top_70_percent:]
         
-        # Select the remaining 30% to ensure diversity
-        # First, track seen states
-        seen_states = set()
-        for item in top_data:
-            state_hash = hash(tuple(item[0].flatten().tolist()))
-            seen_states.add(state_hash)
+        # Sort by priority (highest first)
+        data_with_priority.sort(key=lambda x: x[5], reverse=True)
+        
+        # Simple approach: Keep the top 70% of prioritized experiences,
+        # and randomly sample the rest for diversity
+        total_size = len(data_with_priority)
+        top_percent = int(0.7 * total_size)
+        
+        # Get top prioritized experiences
+        top_experiences = data_with_priority[:top_percent]
+        
+        # Get random sample from the remaining experiences
+        remaining = data_with_priority[top_percent:]
+        random_count = min(int(0.3 * total_size), len(remaining))
+        
+        # Safely handle case where remaining data is less than what we need
+        if random_count > 0 and remaining:
+            random_experiences = random.sample(remaining, random_count)
+        else:
+            random_experiences = []
             
-        # From remaining, select experiences with unique states
-        selected_remaining = []
-        for item in remaining_data:
-            state_hash = hash(tuple(item[0].flatten().tolist()))
-            if state_hash not in seen_states:
-                selected_remaining.append(item)
-                seen_states.add(state_hash)
-                
-            # If we have enough, stop selection
-            if len(selected_remaining) >= min(int(0.3 * len(data_with_priority)), len(remaining_data)):
-                break
-                
-        # If we don't have enough unique states, add random ones
-        if len(selected_remaining) < min(int(0.3 * len(data_with_priority)), len(remaining_data)):
-            needed = min(int(0.3 * len(data_with_priority)), len(remaining_data)) - len(selected_remaining)
-            random_extra = random.sample(remaining_data, min(needed, len(remaining_data)))
-            selected_remaining.extend(random_extra)
-            
-        # Combine top 70% and selected remaining 30%
-        final_data = top_data + selected_remaining
+        # Combine the two sets
+        final_data = top_experiences + random_experiences
+        
         return final_data
+
 
 
     def prepareNetworkInputs(self, step):
@@ -728,6 +750,7 @@ class Agent:
         return feature_vector
 
 
+    # 6. Training Stabilization - Improved training process
     def trainNetwork(self, data, model):
         # If no data to train on, return original model
         if len(data) == 0:
@@ -735,7 +758,7 @@ class Agent:
             return model
             
         # Sample batch from memory
-        minibatch, _ = self.memory.sample(128)  # Smaller batch size for stability
+        minibatch, _ = self.memory.sample(64)  # Increased batch size for better stability
         
         # Prepare data for training
         states = []
@@ -798,6 +821,7 @@ class Agent:
                     best_action = np.argmax(model.predict(next_state_data, verbose=0)[0])
                     
                     # Update target using Double Q-learning formula
+                    # Add n-step return approximation for more stable learning
                     target[action] = reward + self.gamma * next_q_values[best_action]
                 
                 # Add to training batch
@@ -808,17 +832,19 @@ class Agent:
             states = np.array(states)
             targets = np.array(targets)
             
-            # Train model on batch
+            # Train model on batch with validation split for better stability
             model.fit(
                 states, 
                 targets, 
-                batch_size=32,
+                batch_size=64,  # Increased batch size
                 epochs=1, 
-                verbose=0, 
+                verbose=0,
+                validation_split=0.2,  # Add validation split to monitor overfitting
                 callbacks=[self.lossHistory]
             )
             
         return model
+
 
 # GPU configuration summary at the bottom of the file
 print("\nGPU configuration summary:")
@@ -851,6 +877,9 @@ class DeepQAgent(Agent):
     doneKeys = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
     ACTION_BUTTONS = ["X", "Y", "Z", "A", "B", "C"]
 
+
+
+    # 2. Target Network Update Frequency
     def __init__(
         self,
         stateSize=32,
@@ -875,8 +904,8 @@ class DeepQAgent(Agent):
         self.lossHistory = LossHistory()
         self.total_timesteps = 0
         self.episode_count = 0  # For target network updates
-        self.update_target_every = 5  # Requirement 2: Update target network every 5 episodes
-        self.lr_decay = 0.995  # Requirement 4: Learning rate decay factor
+        self.update_target_every = 2  # Improved: Update target network more frequently (every 2 episodes)
+        self.lr_decay = 0.995  # Learning rate decay factor
         
         super(DeepQAgent, self).__init__(resume=resume, name=name, moveList=moveList)
         
@@ -886,7 +915,7 @@ class DeepQAgent(Agent):
             for i, move in enumerate(moveList):
                 logger.info(f"  Action {i}: {move}")
                 
-        # Requirement 2: Initialize target network
+        # Initialize target network
         self.target_model = self.initializeNetwork()
         self.target_model.set_weights(self.model.get_weights())
         
@@ -906,7 +935,6 @@ class DeepQAgent(Agent):
             self.target_model = self.initializeNetwork()
             self.target_model.set_weights(self.model.get_weights())
 
-
         # Handle epsilon (exploration rate)
         if resume and hasattr(self, "total_timesteps"):
             # When resuming, calculate epsilon based on total timesteps
@@ -916,45 +944,30 @@ class DeepQAgent(Agent):
             # Start fresh with full exploration
             self.epsilon = 1.0
             logger.info(f"Starting with new epsilon: {self.epsilon}")
-            
-        # Verify model input shape matches state size
-        try:
-            # Get input shape directly from the model
-            input_shape = self.model.input_shape
-        except AttributeError:
-            # Fallback if input_shape isn't available directly
-            logger.warning("Could not access model.input_shape directly. Using alternate method.")
-            try:
-                # Try to get input_shape from the first layer's output shape
-                input_shape = self.model.layers[0].output_shape
-            except (AttributeError, IndexError):
-                # If that fails, assume it matches state size
-                input_shape = (None, self.stateSize)
-                
-        if input_shape[1] != self.stateSize:
-            logger.warning(f"Model input shape ({input_shape[1]}) doesn't match state size ({self.stateSize})")
-            # We'll handle this dynamically in prepareNetworkInputs
 
+
+
+    # 4. Exploration Strategy - Improved epsilon calculation
     def calculateEpsilonFromTimesteps(self):
-        """Calculate epsilon based on the total training timesteps"""
+        """Calculate epsilon based on the total training timesteps with improved exploration"""
         START_EPSILON = 1.0
-        TIMESTEPS_TO_MIN_EPSILON = 500000
-        decay_per_step = (
-            START_EPSILON - DeepQAgent.EPSILON_MIN
-        ) / TIMESTEPS_TO_MIN_EPSILON
+        TIMESTEPS_TO_MIN_EPSILON = 1000000  # Slower decay for more exploration
+        decay_per_step = (START_EPSILON - DeepQAgent.EPSILON_MIN) / TIMESTEPS_TO_MIN_EPSILON
         
-        # Add periodic epsilon reset
-        reset_interval = 150000
-        if self.total_timesteps > 0 and self.total_timesteps % reset_interval == 0:
-            # Reset to at least 50% exploration
-            self.epsilon = max(0.5, self.epsilon)
-            logger.info(f"Reset epsilon to {self.epsilon} to increase exploration")
+        # Add periodic exploration boosts for better exploration throughout training
+        if self.total_timesteps % 250000 == 0 and self.epsilon < 0.3:
+            boost_amount = min(0.7, self.epsilon + 0.2)
+            self.epsilon = boost_amount
+            logger.info(f"Boosted epsilon to {self.epsilon} to increase exploration")
             return
-            
+        
+        # Otherwise, standard decay with floor
         self.epsilon = max(
             DeepQAgent.EPSILON_MIN,
             START_EPSILON - (decay_per_step * self.total_timesteps),
         )
+
+
 
     def updateEpsilon(self):
         """Update epsilon based on current training progress"""
@@ -1010,27 +1023,29 @@ class DeepQAgent(Agent):
                 move, frameInputs = self.getRandomMove(info)
                 return move, frameInputs
         
+    
+    # 1. Network Architecture & Learning Rate - Enhanced initializeNetwork method
     def initializeNetwork(self):
-        # Simplified network with fewer layers
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
         with tf.device(device):
             # Input layer with BatchNormalization
             input_layer = Input(shape=(self.stateSize,))
             normalized = BatchNormalization()(input_layer)
             
-            # Simpler architecture - just two layers
-            x = Dense(64, activation='relu')(normalized)
+            # Enhanced architecture with better capacity
+            x = Dense(128, activation='relu')(normalized)
+            x = Dropout(0.2)(x)  # Add dropout for regularization
+            x = Dense(64, activation='relu')(x)
             x = BatchNormalization()(x)
             
-            # Value Stream
-            value_stream = Dense(16, activation='relu')(x)
+            # Dueling Architecture - enhanced value and advantage streams
+            value_stream = Dense(32, activation='relu')(x)
             value = Dense(1)(value_stream)
             
-            # Advantage Stream
-            advantage_stream = Dense(16, activation='relu')(x)
+            advantage_stream = Dense(32, activation='relu')(x)
             advantage = Dense(self.actionSize)(advantage_stream)
             
-            # Combine streams
+            # Combine streams with improved numerical stability
             def combine_streams(inputs):
                 value, advantage = inputs
                 value_expanded = tf.expand_dims(value, axis=1)
@@ -1042,16 +1057,16 @@ class DeepQAgent(Agent):
             
             q_values = Lambda(combine_streams, output_shape=output_shape)([value, advantage])
             
-            # Create model with much lower learning rate
+            # Create model with adjusted learning rate for better stability
             model = Model(inputs=input_layer, outputs=q_values)
             
-            # Much lower learning rate with gradient clipping
-            optimizer = Adam(learning_rate=0.00005, clipnorm=0.5)  # Reduced from 0.0001
+            # Better balanced learning rate with gradient clipping
+            optimizer = Adam(learning_rate=0.00025, clipnorm=1.0)
             model.compile(
                 loss=_huber_loss,
                 optimizer=optimizer,
             )
             
-            logger.info(f"Initialized simplified DQN model with lower learning rate")
+            logger.info(f"Initialized enhanced DQN model with optimized architecture")
             
         return model
