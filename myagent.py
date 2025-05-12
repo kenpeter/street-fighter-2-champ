@@ -4,7 +4,7 @@ import random
 import tensorflow as tf
 from tensorflow.python import keras
 from keras.models import Sequential, load_model, Model
-from keras.layers import Dense, Dropout, BatchNormalization, Activation, Lambda, Input
+from keras.layers import Dense, Dropout, BatchNormalization, Activation, Lambda, Input, Add
 from keras.optimizers import Adam
 from keras import backend as K
 import keras.losses
@@ -40,6 +40,22 @@ if len(physical_devices) > 0:
 else:
     print("No GPU devices found. Training will be slow on CPU only.")
     print("Make sure NVIDIA drivers and CUDA are properly installed.")
+
+# Register custom Huber loss function
+# Define the function outside of any class
+def _huber_loss(y_true, y_pred, clip_delta=1.0):
+    import tensorflow as tf
+    error = y_true - y_pred
+    cond = tf.abs(error) <= clip_delta
+    squared_loss = 0.5 * tf.square(error)
+    quadratic_loss = 0.5 * tf.square(clip_delta) + clip_delta * (
+        tf.abs(error) - clip_delta
+    )
+    return tf.reduce_mean(tf.where(cond, squared_loss, quadratic_loss))
+
+# Register the custom loss function with Keras
+from keras.utils import get_custom_objects
+get_custom_objects().update({"_huber_loss": _huber_loss})
 
 class CircularBuffer:
     """A circular buffer implementation for storing experiences efficiently."""
@@ -175,24 +191,35 @@ class Agent:
             )
 
     def recordStep(self, step):
-        # CHANGE: Add win/loss reward logic
+        """Record experience with improved reward shaping"""
         modified_step = list(step)
         reward = modified_step[Agent.REWARD_INDEX]
         
-        # Add large win bonus or loss penalty
+        # Extract health information
         enemy_health = step[Agent.STATE_INDEX].get("enemy_health", 100)
         player_health = step[Agent.STATE_INDEX].get("health", 100)
         
+        # Add large win bonus or loss penalty
         if enemy_health <= 0:
             reward += 100  # Large win bonus
         if player_health <= 0:
             reward -= 50   # Penalize losing
+            
+        # NEW: Add reward for dealing damage
+        next_enemy_health = step[Agent.NEXT_STATE_INDEX].get("enemy_health", 100)
+        damage_dealt = enemy_health - next_enemy_health
+        if damage_dealt > 0:
+            reward += damage_dealt * 0.1  # Small reward for each point of damage
         
         # Update the reward in the step
         modified_step[Agent.REWARD_INDEX] = reward
         
-        # Use a default priority initially based on reward magnitude
+        # Use a priority based on reward magnitude
         priority = abs(reward) + 0.01  # Small constant to avoid zero priority
+        
+        # NEW: Boost replay priority for winning moves
+        if enemy_health <= 0:  # Win condition
+            priority *= 5.0  # Significantly increase priority for win transitions
         
         # Append priority
         modified_step_with_priority = modified_step + [priority]
@@ -212,17 +239,73 @@ class Agent:
             self.episode_rewards = []
 
     def reviewFight(self):
-        data = self.prepareMemoryForTraining(self.memory)
-        self.model = self.trainNetwork(data, self.model)
-        self.updateEpisodeMetrics()
-        if (hasattr(self, "lossHistory") and hasattr(self.lossHistory, "losses") and len(self.lossHistory.losses) > 0):
-            avg_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
-            self.avg_loss_history.append(avg_loss)
+        self.episode_count += 1
+        
+        # Update the target network only periodically
+        if self.episode_count % self.update_target_every == 0:
+            self.target_model.set_weights(self.model.get_weights())
+            logger.info(f"Target network updated at episode {self.episode_count}")
+        
+        # Prepare data and train network
+        try:
+            data = self.prepareMemoryForTraining(self.memory)
+            if len(data) > 0:
+                # NEW: Use a smaller learning rate for a while to stabilize learning
+                temp_lr = self.model.optimizer.learning_rate.numpy() * 0.5
+                self.model.optimizer.learning_rate.assign(temp_lr)
+                
+                self.model = self.trainNetwork(data, self.model)
+                
+                # Reset learning rate after training
+                self.model.optimizer.learning_rate.assign(temp_lr * 2)
+        except Exception as e:
+            logger.error(f"Error training network: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+        
+        # Update metrics safely
+        try:
+            self.updateEpisodeMetrics()
+            if (hasattr(self, "lossHistory") and hasattr(self.lossHistory, "losses") and len(self.lossHistory.losses) > 0):
+                avg_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
+                self.avg_loss_history.append(avg_loss)
+        except Exception as e:
+            logger.error(f"Error updating metrics: {e}")
+        
+        # Update exploration rate
         if hasattr(self, "updateEpsilon"):
-            self.updateEpsilon()
-        self.saveModel()
-        self.saveStats()
-        self.printTrainingProgress()
+            try:
+                self.updateEpsilon()
+            except Exception as e:
+                logger.error(f"Error updating epsilon: {e}")
+        
+        # Apply learning rate decay if needed
+        try:
+            current_time = self.total_timesteps
+            if current_time - self.last_lr_update >= self.lr_step_size:
+                current_lr = self.model.optimizer.learning_rate.numpy()
+                new_lr = current_lr * self.lr_decay
+                self.model.optimizer.learning_rate.assign(new_lr)
+                logger.info(f"Learning rate decayed to {new_lr:.6f} at {current_time} timesteps")
+                self.last_lr_update = current_time
+        except Exception as e:
+            logger.error(f"Error applying learning rate decay: {e}")
+        
+        # Save progress
+        try:
+            self.saveModel()
+        except Exception as e:
+            logger.error(f"Error saving model: {e}")
+        
+        try:
+            self.saveStats()
+        except Exception as e:
+            logger.error(f"Error saving stats: {e}")
+        
+        try:
+            self.printTrainingProgress()
+        except Exception as e:
+            logger.error(f"Error printing progress: {e}")
 
     def loadModel(self):
         # Use absolute path for model loading
@@ -491,10 +574,263 @@ class Agent:
         raise NotImplementedError("Implement this in the inherited agent")
 
     def prepareMemoryForTraining(self, memory):
-        raise NotImplementedError("Implement this in the inherited agent")
+        # Get all experiences from the memory buffer
+        experiences = memory.get_all()
+        if not experiences:
+            return []
+            
+        # Calculate action counts for rarity bonuses
+        action_counts = {}
+        for step in experiences:
+            action = step[Agent.ACTION_INDEX]
+            action_counts[action] = action_counts.get(action, 0) + 1
+            
+        # Compute priorities for each experience
+        data_with_priority = []
+        beta = 1.0  # Hyperparameter for action rarity weight
+        
+        for step in experiences:
+            state = self.prepareNetworkInputs(step[Agent.STATE_INDEX])
+            action = step[Agent.ACTION_INDEX]
+            reward = step[Agent.REWARD_INDEX]
+            done = step[Agent.DONE_INDEX]
+            next_state = self.prepareNetworkInputs(step[Agent.NEXT_STATE_INDEX])
+            
+            # Calculate action rarity: inverse frequency
+            total_experiences = len(experiences)
+            action_frequency = action_counts[action] / total_experiences
+            rarity_score = beta * (1.0 - action_frequency)
+            
+            # Priority combines reward magnitude and rarity
+            priority = abs(reward) + rarity_score
+            
+            # Store along with experience
+            data_with_priority.append([state, action, reward, done, next_state, priority])
+            
+        # Sort by priority and select top 70%
+        data_with_priority.sort(key=lambda x: x[5], reverse=True)
+        top_70_percent = int(0.7 * len(data_with_priority))
+        top_data = data_with_priority[:top_70_percent]
+        remaining_data = data_with_priority[top_70_percent:]
+        
+        # Select the remaining 30% to ensure diversity
+        # First, track seen states
+        seen_states = set()
+        for item in top_data:
+            state_hash = hash(tuple(item[0].flatten().tolist()))
+            seen_states.add(state_hash)
+            
+        # From remaining, select experiences with unique states
+        selected_remaining = []
+        for item in remaining_data:
+            state_hash = hash(tuple(item[0].flatten().tolist()))
+            if state_hash not in seen_states:
+                selected_remaining.append(item)
+                seen_states.add(state_hash)
+                
+            # If we have enough, stop selection
+            if len(selected_remaining) >= min(int(0.3 * len(data_with_priority)), len(remaining_data)):
+                break
+                
+        # If we don't have enough unique states, add random ones
+        if len(selected_remaining) < min(int(0.3 * len(data_with_priority)), len(remaining_data)):
+            needed = min(int(0.3 * len(data_with_priority)), len(remaining_data)) - len(selected_remaining)
+            random_extra = random.sample(remaining_data, min(needed, len(remaining_data)))
+            selected_remaining.extend(random_extra)
+            
+        # Combine top 70% and selected remaining 30%
+        final_data = top_data + selected_remaining
+        return final_data
+
+
+    def prepareNetworkInputs(self, step):
+        feature_vector = []
+        
+        # Get absolute health values
+        player_health = step.get("health", 100)
+        enemy_health = step.get("enemy_health", 100)
+        
+        # Add absolute health values
+        feature_vector.append(player_health)
+        feature_vector.append(enemy_health)
+        
+        # Add relative health percentages (normalized between 0 and 1)
+        player_health_pct = player_health / 100.0  # Assuming max health is 100
+        enemy_health_pct = enemy_health / 100.0
+        health_advantage = player_health_pct - enemy_health_pct  # Positive means player has health advantage
+        
+        feature_vector.append(player_health_pct)
+        feature_vector.append(enemy_health_pct)
+        feature_vector.append(health_advantage)
+        
+        # Position values
+        player_x = step.get("x_position", 0)
+        player_y = step.get("y_position", 0)
+        enemy_x = step.get("enemy_x_position", 0)
+        enemy_y = step.get("enemy_y_position", 0)
+        
+        # Add absolute positions
+        feature_vector.append(player_x)
+        feature_vector.append(player_y)
+        feature_vector.append(enemy_x)
+        feature_vector.append(enemy_y)
+        
+        # Calculate distance to opponent
+        x_distance = abs(player_x - enemy_x)
+        y_distance = abs(player_y - enemy_y)
+        euclidean_distance = np.sqrt(x_distance**2 + y_distance**2)
+        
+        # Add distance metrics
+        feature_vector.append(x_distance)
+        feature_vector.append(y_distance)
+        feature_vector.append(euclidean_distance)
+        
+        # Add directional information (is enemy to the right or left?)
+        facing_right = 1 if player_x < enemy_x else 0
+        feature_vector.append(facing_right)
+        
+        # Add vertical positioning (is enemy above or below?)
+        enemy_above = 1 if player_y > enemy_y else 0
+        feature_vector.append(enemy_above)
+        
+        # Handle unknown status codes safely
+        enemy_status = step.get("enemy_status", 512)
+        player_status = step.get("status", 512)
+        
+        oneHotEnemyState = [0] * len(DeepQAgent.stateIndices.keys())
+        state_index = DeepQAgent.stateIndices.get(enemy_status, 0)  # Default to first index if unknown
+        oneHotEnemyState[state_index] = 1
+        
+        feature_vector += oneHotEnemyState
+        oneHotEnemyChar = [0] * 8
+        enemy_char = step.get("enemy_character", 0)
+        if enemy_char < len(oneHotEnemyChar):
+            oneHotEnemyChar[enemy_char] = 1
+        feature_vector += oneHotEnemyChar
+        
+        oneHotPlayerState = [0] * len(DeepQAgent.stateIndices.keys())
+        state_index = DeepQAgent.stateIndices.get(player_status, 0)  # Default to first index if unknown
+        oneHotPlayerState[state_index] = 1
+        
+        feature_vector += oneHotPlayerState
+        
+        # Update state size if needed based on new features
+        if len(feature_vector) != self.stateSize:
+            logger.info(f"Feature vector size ({len(feature_vector)}) differs from state size ({self.stateSize})")
+            logger.info("Consider updating stateSize parameter when initializing the agent")
+            # Pad or truncate to match expected stateSize
+            if len(feature_vector) < self.stateSize:
+                feature_vector += [0] * (self.stateSize - len(feature_vector))
+            else:
+                feature_vector = feature_vector[:self.stateSize]
+        
+        feature_vector = np.reshape(feature_vector, [1, self.stateSize])
+        return feature_vector
+
 
     def trainNetwork(self, data, model):
-        raise NotImplementedError("Implement this in the inherited agent")
+        # If no data to train on, return original model
+        if len(data) == 0:
+            logger.warning("No data available for training. Skipping.")
+            return model
+            
+        # Sample batch from memory
+        minibatch, _ = self.memory.sample(128)  # Smaller batch size for stability
+        
+        # Prepare data for training
+        states = []
+        targets = []
+        
+        # Choose the appropriate device
+        device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
+        
+        with tf.device(device):
+            for step in minibatch:
+                # Extract necessary components
+                state = step[Agent.STATE_INDEX]
+                action = step[Agent.ACTION_INDEX]
+                reward = step[Agent.REWARD_INDEX]
+                next_state = step[Agent.NEXT_STATE_INDEX]
+                done = step[Agent.DONE_INDEX]
+                
+                # Safety check for action index
+                if action >= self.actionSize:
+                    action = action % self.actionSize
+                
+                # Prepare state data for network input
+                state_data = self.prepareNetworkInputs(state)
+                
+                # Get current Q values for this state 
+                q_values = model.predict(state_data, verbose=0)[0]
+                
+                # Handle array shape - ensure q_values is the right shape
+                if len(q_values.shape) == 0:  # Scalar output
+                    q_values = np.ones(self.actionSize) / self.actionSize
+                elif len(q_values.shape) > 1:  # Extra dimensions
+                    q_values = q_values.flatten()
+                    # If flattened size doesn't match actionSize, create uniform distribution
+                    if len(q_values) != self.actionSize:
+                        q_values = np.ones(self.actionSize) / self.actionSize
+                
+                # Create a copy of Q values to update
+                target = q_values.copy()
+                
+                if done:
+                    # If terminal state, target is just the reward
+                    target[action] = reward
+                else:
+                    # Prepare next state data
+                    next_state_data = self.prepareNetworkInputs(next_state)
+                    
+                    # Use target network for next state Q values
+                    next_q_values = self.target_model.predict(next_state_data, verbose=0)[0]
+                    
+                    # Handle next_q_values shape
+                    if len(next_q_values.shape) == 0:  # Scalar output
+                        next_q_values = np.ones(self.actionSize) / self.actionSize
+                    elif len(next_q_values.shape) > 1:  # Extra dimensions
+                        next_q_values = next_q_values.flatten()
+                        # If flattened size doesn't match actionSize, create uniform distribution
+                        if len(next_q_values) != self.actionSize:
+                            next_q_values = np.ones(self.actionSize) / self.actionSize
+                    
+                    # Double DQN: Use main network to select action, target network to estimate value
+                    best_action = np.argmax(model.predict(next_state_data, verbose=0)[0])
+                    
+                    # Update target using Double Q-learning formula
+                    target[action] = reward + self.gamma * next_q_values[best_action]
+                
+                # Add to training batch
+                states.append(state_data[0])
+                targets.append(target)
+            
+            # Convert to numpy arrays
+            states = np.array(states)
+            targets = np.array(targets)
+            
+            # Train model on batch
+            model.fit(
+                states, 
+                targets, 
+                batch_size=32,
+                epochs=1, 
+                verbose=0, 
+                callbacks=[self.lossHistory]
+            )
+            
+        return model
+
+# GPU configuration summary at the bottom of the file
+print("\nGPU configuration summary:")
+print("==========================")
+print("TensorFlow version:", tf.__version__)
+print("CUDA available:", tf.test.is_built_with_cuda())
+print("GPU devices:", tf.config.list_physical_devices("GPU"))
+if len(tf.config.list_physical_devices("GPU")) > 0:
+    print("GPU device name:", tf.test.gpu_device_name())
+else:
+    print("No GPU found. Using CPU only.")
+print("==========================\n")
 
 class DeepQAgent(Agent):
     # CHANGE: Lower min epsilon from 0.1 to 0.05 for better exploration
@@ -514,17 +850,6 @@ class DeepQAgent(Agent):
     }
     doneKeys = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
     ACTION_BUTTONS = ["X", "Y", "Z", "A", "B", "C"]
-
-    @staticmethod
-    def _huber_loss(y_true, y_pred, clip_delta=1.0):
-        import tensorflow as tf
-        error = y_true - y_pred
-        cond = tf.abs(error) <= clip_delta
-        squared_loss = 0.5 * tf.square(error)
-        quadratic_loss = 0.5 * tf.square(clip_delta) + clip_delta * (
-            tf.abs(error) - clip_delta
-        )
-        return tf.reduce_mean(tf.where(cond, squared_loss, quadratic_loss))
 
     def __init__(
         self,
@@ -610,8 +935,6 @@ class DeepQAgent(Agent):
             logger.warning(f"Model input shape ({input_shape[1]}) doesn't match state size ({self.stateSize})")
             # We'll handle this dynamically in prepareNetworkInputs
 
-
-
     def calculateEpsilonFromTimesteps(self):
         """Calculate epsilon based on the total training timesteps"""
         START_EPSILON = 1.0
@@ -619,6 +942,15 @@ class DeepQAgent(Agent):
         decay_per_step = (
             START_EPSILON - DeepQAgent.EPSILON_MIN
         ) / TIMESTEPS_TO_MIN_EPSILON
+        
+        # Add periodic epsilon reset
+        reset_interval = 150000
+        if self.total_timesteps > 0 and self.total_timesteps % reset_interval == 0:
+            # Reset to at least 50% exploration
+            self.epsilon = max(0.5, self.epsilon)
+            logger.info(f"Reset epsilon to {self.epsilon} to increase exploration")
+            return
+            
         self.epsilon = max(
             DeepQAgent.EPSILON_MIN,
             START_EPSILON - (decay_per_step * self.total_timesteps),
@@ -685,8 +1017,11 @@ class DeepQAgent(Agent):
             # Input layer
             input_layer = Input(shape=(self.stateSize,))
             
+            # Apply BatchNormalization for better training stability
+            normalized = BatchNormalization()(input_layer)
+            
             # Shared network layers - keep it simple
-            x = Dense(64, activation='relu')(input_layer)
+            x = Dense(64, activation='relu')(normalized)
             x = Dense(128, activation='relu')(x)
             
             # Value Stream - estimates state value
@@ -717,285 +1052,13 @@ class DeepQAgent(Agent):
             model = Model(inputs=input_layer, outputs=q_values)
             
             # Compile model
-            optimizer = Adam(learning_rate=self.learningRate)
+            optimizer = Adam(learning_rate=self.learningRate, clipnorm=1.0)  # Add gradient clipping
             model.compile(
-                loss=DeepQAgent._huber_loss,
+                loss=_huber_loss,  # Use the global _huber_loss function
                 optimizer=optimizer,
             )
             
-            logger.info(f"Successfully initialized simplified Dueling DQN model on {device}")
+            logger.info(f"Successfully initialized improved Dueling DQN model on {device}")
             model.summary(print_fn=lambda x: logger.info(x))
             
         return model
-
-
-    def prepareMemoryForTraining(self, memory):
-        # Get all experiences from the memory buffer
-        experiences = memory.get_all()
-        if not experiences:
-            return []
-            
-        # Calculate action counts for rarity bonuses
-        action_counts = {}
-        for step in experiences:
-            action = step[Agent.ACTION_INDEX]
-            action_counts[action] = action_counts.get(action, 0) + 1
-            
-        # Compute priorities for each experience
-        data_with_priority = []
-        beta = 1.0  # Hyperparameter for action rarity weight
-        
-        for step in experiences:
-            state = self.prepareNetworkInputs(step[Agent.STATE_INDEX])
-            action = step[Agent.ACTION_INDEX]
-            reward = step[Agent.REWARD_INDEX]
-            done = step[Agent.DONE_INDEX]
-            next_state = self.prepareNetworkInputs(step[Agent.NEXT_STATE_INDEX])
-            
-            # Calculate action rarity: inverse frequency
-            total_experiences = len(experiences)
-            action_frequency = action_counts[action] / total_experiences
-            rarity_score = beta * (1.0 - action_frequency)
-            
-            # Priority combines reward magnitude and rarity
-            priority = abs(reward) + rarity_score
-            
-            # Store along with experience
-            data_with_priority.append([state, action, reward, done, next_state, priority])
-            
-        # Sort by priority and select top 70%
-        data_with_priority.sort(key=lambda x: x[5], reverse=True)
-        top_70_percent = int(0.7 * len(data_with_priority))
-        top_data = data_with_priority[:top_70_percent]
-        remaining_data = data_with_priority[top_70_percent:]
-        
-        # Select the remaining 30% to ensure diversity
-        # First, track seen states
-        seen_states = set()
-        for item in top_data:
-            state_hash = hash(tuple(item[0].flatten().tolist()))
-            seen_states.add(state_hash)
-            
-        # From remaining, select experiences with unique states
-        selected_remaining = []
-        for item in remaining_data:
-            state_hash = hash(tuple(item[0].flatten().tolist()))
-            if state_hash not in seen_states:
-                selected_remaining.append(item)
-                seen_states.add(state_hash)
-                
-            # If we have enough, stop selection
-            if len(selected_remaining) >= min(int(0.3 * len(data_with_priority)), len(remaining_data)):
-                break
-                
-        # If we don't have enough unique states, add random ones
-        if len(selected_remaining) < min(int(0.3 * len(data_with_priority)), len(remaining_data)):
-            needed = min(int(0.3 * len(data_with_priority)), len(remaining_data)) - len(selected_remaining)
-            random_extra = random.sample(remaining_data, min(needed, len(remaining_data)))
-            selected_remaining.extend(random_extra)
-            
-        # Combine top 70% and selected remaining 30%
-        final_data = top_data + selected_remaining
-        return final_data
-
-    def prepareNetworkInputs(self, step):
-        feature_vector = []
-        # e health
-        feature_vector.append(step["enemy_health"])
-        # e x
-        feature_vector.append(step["enemy_x_position"])
-        # e y
-        feature_vector.append(step["enemy_y_position"])
-        
-        # Handle unknown status codes safely
-        enemy_status = step.get("enemy_status", 512)
-        player_status = step.get("status", 512)
-        
-        oneHotEnemyState = [0] * len(DeepQAgent.stateIndices.keys())
-        state_index = DeepQAgent.stateIndices.get(enemy_status, 0)  # Default to first index if unknown
-        oneHotEnemyState[state_index] = 1
-        
-        feature_vector += oneHotEnemyState
-        oneHotEnemyChar = [0] * 8
-        oneHotEnemyChar[step["enemy_character"]] = 1
-        feature_vector += oneHotEnemyChar
-        feature_vector.append(step["health"])
-        feature_vector.append(step["x_position"])
-        feature_vector.append(step["y_position"])
-        
-        oneHotPlayerState = [0] * len(DeepQAgent.stateIndices.keys())
-        state_index = DeepQAgent.stateIndices.get(player_status, 0)  # Default to first index if unknown
-        oneHotPlayerState[state_index] = 1
-        
-        feature_vector += oneHotPlayerState
-        feature_vector = np.reshape(feature_vector, [1, self.stateSize])
-        return feature_vector
-
-    def trainNetwork(self, data, model):
-        # If no data to train on, return original model
-        if len(data) == 0:
-            logger.warning("No data available for training. Skipping.")
-            return model
-            
-        # Sample batch from memory
-        minibatch, _ = self.memory.sample(128)  # Smaller batch size for stability
-        
-        # Prepare data for training
-        states = []
-        targets = []
-        
-        # Choose the appropriate device
-        device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
-        
-        with tf.device(device):
-            for step in minibatch:
-                # Extract necessary components
-                state = step[Agent.STATE_INDEX]
-                action = step[Agent.ACTION_INDEX]
-                reward = step[Agent.REWARD_INDEX]
-                next_state = step[Agent.NEXT_STATE_INDEX]
-                done = step[Agent.DONE_INDEX]
-                
-                # Safety check for action index
-                if action >= self.actionSize:
-                    action = action % self.actionSize
-                
-                # Prepare state data for network input
-                state_data = self.prepareNetworkInputs(state)
-                
-                # Get current Q values for this state 
-                q_values = model.predict(state_data, verbose=0)[0]
-                
-                # Handle array shape - ensure q_values is the right shape
-                if len(q_values.shape) == 0:  # Scalar output
-                    q_values = np.ones(self.actionSize) / self.actionSize
-                elif len(q_values.shape) > 1:  # Extra dimensions
-                    q_values = q_values.flatten()
-                    # If flattened size doesn't match actionSize, create uniform distribution
-                    if len(q_values) != self.actionSize:
-                        q_values = np.ones(self.actionSize) / self.actionSize
-                
-                # Create a copy of Q values to update
-                target = q_values.copy()
-                
-                if done:
-                    # If terminal state, target is just the reward
-                    target[action] = reward
-                else:
-                    # Prepare next state data
-                    next_state_data = self.prepareNetworkInputs(next_state)
-                    
-                    # Use target network for next state Q values
-                    next_q_values = self.target_model.predict(next_state_data, verbose=0)[0]
-                    
-                    # Handle next_q_values shape
-                    if len(next_q_values.shape) == 0:  # Scalar output
-                        next_q_values = np.ones(self.actionSize) / self.actionSize
-                    elif len(next_q_values.shape) > 1:  # Extra dimensions
-                        next_q_values = next_q_values.flatten()
-                        # If flattened size doesn't match actionSize, create uniform distribution
-                        if len(next_q_values) != self.actionSize:
-                            next_q_values = np.ones(self.actionSize) / self.actionSize
-                    
-                    # Update target using Q-learning formula
-                    target[action] = reward + self.gamma * np.max(next_q_values)
-                
-                # Add to training batch
-                states.append(state_data[0])
-                targets.append(target)
-            
-            # Convert to numpy arrays
-            states = np.array(states)
-            targets = np.array(targets)
-            
-            # Train model on batch
-            model.fit(
-                states, 
-                targets, 
-                batch_size=32,
-                epochs=1, 
-                verbose=0, 
-                callbacks=[self.lossHistory]
-            )
-            
-        return model
-
-
-    # Replace the reviewFight method with this more robust version:
-    def reviewFight(self):
-        self.episode_count += 1
-        
-        # Update the target network only periodically
-        if self.episode_count % self.update_target_every == 0:
-            self.target_model.set_weights(self.model.get_weights())
-            logger.info(f"Target network updated at episode {self.episode_count}")
-        
-        # Prepare data and train network
-        try:
-            data = self.prepareMemoryForTraining(self.memory)
-            if len(data) > 0:
-                self.model = self.trainNetwork(data, self.model)
-        except Exception as e:
-            logger.error(f"Error training network: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-        
-        # Update metrics safely
-        try:
-            self.updateEpisodeMetrics()
-            if (hasattr(self, "lossHistory") and hasattr(self.lossHistory, "losses") and len(self.lossHistory.losses) > 0):
-                avg_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
-                self.avg_loss_history.append(avg_loss)
-        except Exception as e:
-            logger.error(f"Error updating metrics: {e}")
-        
-        # Update exploration rate
-        if hasattr(self, "updateEpsilon"):
-            try:
-                self.updateEpsilon()
-            except Exception as e:
-                logger.error(f"Error updating epsilon: {e}")
-        
-        # Apply learning rate decay if needed
-        try:
-            current_time = self.total_timesteps
-            if current_time - self.last_lr_update >= self.lr_step_size:
-                current_lr = self.model.optimizer.learning_rate.numpy()
-                new_lr = current_lr * self.lr_decay
-                self.model.optimizer.learning_rate.assign(new_lr)
-                logger.info(f"Learning rate decayed to {new_lr:.6f} at {current_time} timesteps")
-                self.last_lr_update = current_time
-        except Exception as e:
-            logger.error(f"Error applying learning rate decay: {e}")
-        
-        # Save progress
-        try:
-            self.saveModel()
-        except Exception as e:
-            logger.error(f"Error saving model: {e}")
-        
-        try:
-            self.saveStats()
-        except Exception as e:
-            logger.error(f"Error saving stats: {e}")
-        
-        try:
-            self.printTrainingProgress()
-        except Exception as e:
-            logger.error(f"Error printing progress: {e}")
-
-
-# Register custom loss function
-from keras.utils import get_custom_objects
-get_custom_objects().update({"_huber_loss": DeepQAgent._huber_loss})
-
-print("\nGPU configuration summary:")
-print("==========================")
-print("TensorFlow version:", tf.__version__)
-print("CUDA available:", tf.test.is_built_with_cuda())
-print("GPU devices:", tf.config.list_physical_devices("GPU"))
-if len(tf.config.list_physical_devices("GPU")) > 0:
-    print("GPU device name:", tf.test.gpu_device_name())
-else:
-    print("No GPU found. Using CPU only.")
-print("==========================\n")

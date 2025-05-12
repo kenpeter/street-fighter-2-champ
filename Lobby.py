@@ -797,6 +797,7 @@ if __name__ == "__main__":
         
     # Create agent
     agent = DeepQAgent(
+        stateSize=40,
         resume=args.resume,
         name=args.name,
     )
