@@ -29,28 +29,4 @@ Keys "-" and "=": Sagat, M.Bison (final bosses with highest difficulty)
 
 
 
-How to Create Higher-Level AI States:
-
-
-
-
-| Win Rate | Epsilon | Learning Rate | Total Timesteps |
-|----------|---------|---------------|-----------------|
-| 30%      | 0.90    | 0.002         | 20,000          |
-| 40%      | 0.70    | 0.0015        | 50,000          |
-| 50%      | 0.50    | 0.001         | 80,000          |
-| 60%      | 0.30    | 0.001         | 100,000         |
-| 70%      | 0.20    | 0.0005        | 250,000         |
-| 80%      | 0.10    | 0.0001        | 500,000         |
-| 90%      | 0.05    | 0.00005       | 1,000,000       |
-
-
-
-
-
-Win Percentage	Estimated Training Steps
-50%	50,000
-60%	100,000
-70%	200,000
-80%	500,000
-90%	1,000,000
+Win Rate MilestoneEstimated Timesteps RequiredEstimated EpisodesTraining Time (approx.)10% Win Rate~50,000~50~8 hours20% Win Rate98,116 (achieved)100 (achieved)~15 hours30% Win Rate~200,000 (projected)~200~30 hours40% Win Rate~350,000 (projected)~350~52 hours50% Win Rate~500,000 (projected)~500~75 hours60% Win Rate~700,000 (projected)~700~105 hours70% Win Rate~950,000 (projected)~950~142 hours80% Win Rate~1,300,000 (projected)~1,300~195 hours90% Win RateMay require architecture improvements--
