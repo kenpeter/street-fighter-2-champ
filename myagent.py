@@ -1011,54 +1011,47 @@ class DeepQAgent(Agent):
                 return move, frameInputs
         
     def initializeNetwork(self):
-        # Simplified Dueling DQN using pure Functional API
+        # Simplified network with fewer layers
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
         with tf.device(device):
-            # Input layer
+            # Input layer with BatchNormalization
             input_layer = Input(shape=(self.stateSize,))
-            
-            # Apply BatchNormalization for better training stability
             normalized = BatchNormalization()(input_layer)
             
-            # Shared network layers - keep it simple
+            # Simpler architecture - just two layers
             x = Dense(64, activation='relu')(normalized)
-            x = Dense(128, activation='relu')(x)
+            x = BatchNormalization()(x)
             
-            # Value Stream - estimates state value
-            value_stream = Dense(32, activation='relu')(x)
+            # Value Stream
+            value_stream = Dense(16, activation='relu')(x)
             value = Dense(1)(value_stream)
             
-            # Advantage Stream - estimates advantage of each action
-            advantage_stream = Dense(32, activation='relu')(x)
+            # Advantage Stream
+            advantage_stream = Dense(16, activation='relu')(x)
             advantage = Dense(self.actionSize)(advantage_stream)
             
-            # Combine value and advantage streams
-            # Q(s,a) = V(s) + (A(s,a) - mean(A(s,a')))
+            # Combine streams
             def combine_streams(inputs):
                 value, advantage = inputs
-                # Use tf instead of K for tensor operations
                 value_expanded = tf.expand_dims(value, axis=1)
                 advantage_mean = tf.reduce_mean(advantage, axis=1, keepdims=True)
                 return value_expanded + (advantage - advantage_mean)
                 
-            # Define output shape function
             def output_shape(input_shapes):
-                return input_shapes[1]  # Return the shape of advantage
+                return input_shapes[1]
             
-            # Combine streams with Lambda layer
             q_values = Lambda(combine_streams, output_shape=output_shape)([value, advantage])
             
-            # Create complete model
+            # Create model with much lower learning rate
             model = Model(inputs=input_layer, outputs=q_values)
             
-            # Compile model
-            optimizer = Adam(learning_rate=self.learningRate, clipnorm=1.0)  # Add gradient clipping
+            # Much lower learning rate with gradient clipping
+            optimizer = Adam(learning_rate=0.00005, clipnorm=0.5)  # Reduced from 0.0001
             model.compile(
-                loss=_huber_loss,  # Use the global _huber_loss function
+                loss=_huber_loss,
                 optimizer=optimizer,
             )
             
-            logger.info(f"Successfully initialized improved Dueling DQN model on {device}")
-            model.summary(print_fn=lambda x: logger.info(x))
+            logger.info(f"Initialized simplified DQN model with lower learning rate")
             
         return model
