@@ -93,7 +93,10 @@ class CircularBuffer:
     def __len__(self):
         return self.size
 
-class Agent:
+class DeepQAgent:
+    """Deep Q-Learning agent with Double DQN and Dueling architecture"""
+    
+    # Class variables from Agent
     OBSERVATION_INDEX = 0
     STATE_INDEX = 1
     ACTION_INDEX = 2
@@ -103,29 +106,46 @@ class Agent:
     DONE_INDEX = 6
     PRIORITY_INDEX = 7
     MAX_DATA_LENGTH = 200000
-    DEFAULT_MODELS_DIR_PATH = "./models"
-    DEFAULT_LOGS_DIR_PATH = "./logs"
-    DEFAULT_STATS_DIR_PATH = "./stats"
 
-    def __init__(self, resume=False, name=None, moveList=Moves):
+    # Class variables from DeepQAgent
+    EPSILON_MIN = 0.05
+    DEFAULT_DISCOUNT_RATE = 0.98
+    DEFAULT_LEARNING_RATE = 0.0001
+    stateIndices = {
+        512: 0, 514: 1, 516: 2, 518: 3, 520: 4, 
+        522: 5, 524: 6, 526: 7, 532: 8,
+    }
+    doneKeys = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
+    ACTION_BUTTONS = ["X", "Y", "Z", "A", "B", "C"]
+
+    def __init__(self, stateSize=32, resume=False, name=None, moveList=Moves):
+        """
+        Initialize the DeepQAgent
+        
+        Args:
+            stateSize: Size of the state vector
+            resume: Whether to resume training from saved model
+            name: Name of the agent
+            moveList: List of available moves
+        """
         if name is None:
             self.name = self.__class__.__name__
         else:
             self.name = name
             
         self.current_dir = os.path.dirname(os.path.abspath(__file__))
-        Agent.DEFAULT_MODELS_DIR_PATH = os.path.join(self.current_dir, "models")
-        Agent.DEFAULT_LOGS_DIR_PATH = os.path.join(self.current_dir, "logs")
-        Agent.DEFAULT_STATS_DIR_PATH = os.path.join(self.current_dir, "stats")
+        self.DEFAULT_MODELS_DIR_PATH = os.path.join(self.current_dir, "models")
+        self.DEFAULT_LOGS_DIR_PATH = os.path.join(self.current_dir, "logs")
+        self.DEFAULT_STATS_DIR_PATH = os.path.join(self.current_dir, "stats")
         
-        os.makedirs(Agent.DEFAULT_MODELS_DIR_PATH, exist_ok=True)
-        os.makedirs(Agent.DEFAULT_LOGS_DIR_PATH, exist_ok=True)
-        os.makedirs(Agent.DEFAULT_STATS_DIR_PATH, exist_ok=True)
+        os.makedirs(self.DEFAULT_MODELS_DIR_PATH, exist_ok=True)
+        os.makedirs(self.DEFAULT_LOGS_DIR_PATH, exist_ok=True)
+        os.makedirs(self.DEFAULT_STATS_DIR_PATH, exist_ok=True)
         
         logger.info(f"Agent {self.name} initialization:")
-        logger.info(f"Models directory: {Agent.DEFAULT_MODELS_DIR_PATH}")
-        logger.info(f"Logs directory: {Agent.DEFAULT_LOGS_DIR_PATH}")
-        logger.info(f"Stats directory: {Agent.DEFAULT_STATS_DIR_PATH}")
+        logger.info(f"Models directory: {self.DEFAULT_MODELS_DIR_PATH}")
+        logger.info(f"Logs directory: {self.DEFAULT_LOGS_DIR_PATH}")
+        logger.info(f"Stats directory: {self.DEFAULT_STATS_DIR_PATH}")
         
         self.prepareForNextFight()
         self.moveList = moveList
@@ -139,18 +159,40 @@ class Agent:
         self.last_lr_update = 0
         self.lr_decay = 0.995
         
-        if self.__class__.__name__ != "Agent":
-            self.model = self.initializeNetwork()
-            if resume:
-                self.loadModel()
-                self.loadStats()
-                logger.info(f"Resumed training for {self.name} from existing model")
-            else:
-                logger.info(f"Starting fresh training for {self.name}")
+        # DeepQAgent-specific attributes
+        self.stateSize = stateSize
+        self.actionSize = len(moveList) if hasattr(moveList, '__len__') else 20
+        self.gamma = DeepQAgent.DEFAULT_DISCOUNT_RATE
+        self.learningRate = DeepQAgent.DEFAULT_LEARNING_RATE
+        self.lossHistory = LossHistory()
+        self.episode_count = 0
+        self.update_target_every = 6  # Update target network every 6 episodes
+        self._last_logged_epsilon = None  # For tracking epsilon changes
+        
+        # Initialize network (no longer conditional on class name)
+        self.model = self.initializeNetwork()
+        if resume:
+            self.loadModel()
+            self.loadStats()
+            logger.info(f"Resumed training for {self.name} from existing model")
+        else:
+            logger.info(f"Starting fresh training for {self.name}")
+        
+        # Create target network
+        self.target_model = self.initializeNetwork()
+        self.target_model.set_weights(self.model.get_weights())
+        
+        # Set initial epsilon
+        if resume and hasattr(self, "total_timesteps"):
+            self.calculateEpsilonFromTimesteps()
+            logger.info(f"Resuming with epsilon: {self.epsilon}")
+        else:
+            self.epsilon = 1.0
+            logger.info(f"Starting with epsilon: {self.epsilon}")
 
     def prepareForNextFight(self):
         """Reset agent memory and episode rewards for a new fight"""
-        self.memory = CircularBuffer(Agent.MAX_DATA_LENGTH)
+        self.memory = CircularBuffer(DeepQAgent.MAX_DATA_LENGTH)
         self.episode_rewards = []
 
     def getRandomMove(self, info):
@@ -182,65 +224,70 @@ class Agent:
 
     def recordStep(self, step):
         """
-        Record a step in the agent's memory with calculated reward
+        Record a step with enhanced reward shaping
         
         Args:
             step: List containing state, action, reward, next_state and done information
         """
         modified_step = list(step)
         
-        # Extract health information
-        current_enemy_health = step[Agent.STATE_INDEX].get("enemy_health", 100)
-        current_player_health = step[Agent.STATE_INDEX].get("health", 100)
-        next_enemy_health = step[Agent.NEXT_STATE_INDEX].get("enemy_health", 100)
-        next_player_health = step[Agent.NEXT_STATE_INDEX].get("health", 100)
+        # Extract state information
+        current_state = step[DeepQAgent.STATE_INDEX]
+        next_state = step[DeepQAgent.NEXT_STATE_INDEX]
+        reward = step[DeepQAgent.REWARD_INDEX]
         
-        # Calculate damage dealt and taken
-        enemy_damage = max(0, current_enemy_health - next_enemy_health)
-        player_damage = max(0, current_player_health - next_player_health)
+        # Health metrics
+        current_player_health = current_state.get("health", 100)
+        current_enemy_health = current_state.get("enemy_health", 100)
+        next_player_health = next_state.get("health", 100)
+        next_enemy_health = next_state.get("enemy_health", 100)
         
-        # Base reward from environment
-        reward = modified_step[Agent.REWARD_INDEX]
+        # Calculate damages
+        damage_dealt = max(0, current_enemy_health - next_enemy_health)
+        damage_taken = max(0, current_player_health - next_player_health)
         
-        # Health-based rewards
-        health_reward = -0.2 * player_damage  # Negative reward for taking damage
-        enemy_health_reward = 0.3 * enemy_damage  # Positive reward for dealing damage
+        # Position information
+        player_x = current_state.get("x_position", 0)
+        enemy_x = current_state.get("enemy_x_position", 0)
+        distance = abs(player_x - enemy_x)
         
-        # Win/loss rewards
+        # Combo counter
+        combo_count = current_state.get("combo_count", 0)
+        
+        # Damage rewards
+        damage_reward = damage_dealt * 0.2
+        damage_penalty = damage_taken * -0.2
+        modified_reward = reward + damage_reward + damage_penalty
+        
+        # Victory and defeat rewards
         if next_enemy_health <= 0:
-            reward += 50  # Big reward for winning
-        if next_player_health <= 0:
-            reward -= 25  # Penalty for losing
-            
-        # Positional rewards
-        x_distance = abs(step[Agent.STATE_INDEX].get("x_position", 0) - 
-                         step[Agent.STATE_INDEX].get("enemy_x_position", 0))
+            modified_reward += 150 + (next_player_health / 100 * 50)  # More health = better victory
+        elif next_player_health <= 0:
+            modified_reward -= 75
         
-        # Strategic positioning based on health advantage
-        player_attacking = (current_player_health > 50 and current_enemy_health < 50)
-        position_reward = 0
-        if player_attacking and x_distance < 50:  # Close when attacking
-            position_reward = 0.1
-        elif not player_attacking and x_distance > 100:  # Far when defensive
-            position_reward = 0.1
+        # Combo bonus
+        combo_bonus = combo_count * 3
+        modified_reward += combo_bonus
         
-        # Calculate final reward
-        total_reward = reward + health_reward + enemy_health_reward + position_reward
+        # Positional advantage reward
+        if distance < 50:
+            modified_reward += 0.1 * (50 - distance)  # Closer = better when in range
         
-        modified_step[Agent.REWARD_INDEX] = total_reward
+        # Update reward
+        modified_step[DeepQAgent.REWARD_INDEX] = modified_reward
         
-        # Calculate priority for experience replay
-        priority = abs(total_reward) + 0.01  # Ensure non-zero priority
+        # Calculate experience priority
+        priority = abs(modified_reward) + 0.01
         if next_enemy_health <= 0:
-            priority *= 3.0  # Prioritize winning experiences
-        if enemy_damage > 10:
-            priority *= 2.0  # Prioritize successful attacks
+            priority *= 8.0  # Highly prioritize winning experiences
+        if damage_dealt > 10:
+            priority *= 2.0  # Prioritize effective attacks
         
-        # Append experience to memory
+        # Save to memory
         modified_step_with_priority = modified_step + [priority]
         self.memory.append(modified_step_with_priority)
         self.total_timesteps += 1
-        self.episode_rewards.append(total_reward)
+        self.episode_rewards.append(modified_reward)
 
     def updateEpisodeMetrics(self):
         """Update metrics at the end of an episode"""
@@ -316,7 +363,7 @@ class Agent:
 
     def loadModel(self):
         """Load model weights from file if available"""
-        models_dir = os.path.join(self.current_dir, "models")
+        models_dir = self.DEFAULT_MODELS_DIR_PATH
         os.makedirs(models_dir, exist_ok=True)
         model_path = os.path.join(models_dir, f"{self.getModelName()}")
         load_successful = False
@@ -342,7 +389,7 @@ class Agent:
 
     def saveModel(self):
         """Save model weights to file"""
-        models_dir = os.path.join(self.current_dir, "models")
+        models_dir = self.DEFAULT_MODELS_DIR_PATH
         os.makedirs(models_dir, exist_ok=True)
         model_path = os.path.join(models_dir, f"{self.getModelName()}.weights.h5")
         try:
@@ -353,7 +400,7 @@ class Agent:
 
     def saveStats(self):
         """Save agent statistics and memory to file"""
-        stats_dir = os.path.join(self.current_dir, "stats")
+        stats_dir = self.DEFAULT_STATS_DIR_PATH
         os.makedirs(stats_dir, exist_ok=True)
         stats_path = os.path.join(stats_dir, f"{self.name}_stats.json")
         memory_path = os.path.join(stats_dir, f"{self.name}_memory.pkl")
@@ -381,7 +428,7 @@ class Agent:
 
     def loadStats(self):
         """Load agent statistics and memory from file"""
-        stats_dir = os.path.join(self.current_dir, "stats")
+        stats_dir = self.DEFAULT_STATS_DIR_PATH
         stats_path = os.path.join(stats_dir, f"{self.name}_stats.json")
         memory_path = os.path.join(stats_dir, f"{self.name}_memory.pkl")
         
@@ -409,7 +456,7 @@ class Agent:
             try:
                 with open(memory_path, "rb") as file:
                     memory_data = pickle.load(file)
-                    self.memory = CircularBuffer(Agent.MAX_DATA_LENGTH)
+                    self.memory = CircularBuffer(DeepQAgent.MAX_DATA_LENGTH)
                     for experience in memory_data:
                         self.memory.append(experience)
                     logger.info(f"✓ Loaded memory with {len(memory_data)} experiences")
@@ -450,425 +497,6 @@ class Agent:
     def getLogsName(self):
         """Get the name of the logs for file operations"""
         return self.name + "Logs"
-
-    def getMove(self, obs, info):
-        """
-        Get the next move - Must be implemented by subclasses
-        
-        Args:
-            obs: Current observation
-            info: Additional game state information
-            
-        Returns:
-            move: Move index
-            frameInputs: Frame inputs for the selected move
-        """
-        move, frameInputs = self.getRandomMove(info)
-        return move, frameInputs
-
-    def initializeNetwork(self):
-        """Initialize the neural network - Must be implemented by subclasses"""
-        raise NotImplementedError("Implement this in the inherited agent")
-
-    def prepareMemoryForTraining(self, memory):
-        """
-        Prepare memory for training with consistent prioritization scheme
-        
-        Args:
-            memory: CircularBuffer object containing experiences
-            
-        Returns:
-            List of experiences prioritized for training
-        """
-        experiences = memory.get_all()
-        if not experiences:
-            return []
-        
-        # Calculate priorities based on clear criteria
-        data_with_priority = []
-        for step in experiences:
-            state = step[Agent.STATE_INDEX]
-            next_state = step[Agent.NEXT_STATE_INDEX]
-            action = step[Agent.ACTION_INDEX]
-            reward = step[Agent.REWARD_INDEX]
-            done = step[Agent.DONE_INDEX]
-            
-            # Base priority on reward magnitude
-            priority = abs(reward) + 0.01  # Small constant to ensure non-zero priority
-            
-            # Prioritize terminal states where agent wins
-            if next_state.get('enemy_health', 100) <= 0:
-                priority *= 5.0
-            
-            # Prioritize states where agent dealt significant damage
-            damage_dealt = max(0, state.get('enemy_health', 100) - next_state.get('enemy_health', 100))
-            if damage_dealt > 10:
-                priority *= 2.0
-            
-            processed_state = self.prepareNetworkInputs(state)
-            processed_next_state = self.prepareNetworkInputs(next_state)
-            
-            data_with_priority.append([processed_state, action, reward, done, processed_next_state, priority])
-        
-        # Balance between high priority and exploration with fixed ratios
-        data_with_priority.sort(key=lambda x: x[5], reverse=True)
-        total_size = len(data_with_priority)
-        
-        # Get top 70% high priority experiences
-        high_priority_count = int(0.7 * total_size)
-        high_priority = data_with_priority[:high_priority_count]
-        
-        # Get 30% random experiences for exploration
-        remaining = data_with_priority[high_priority_count:]
-        random_count = min(int(0.3 * total_size), len(remaining))
-        random_experiences = random.sample(remaining, random_count) if random_count > 0 and remaining else []
-        
-        # Combine and return
-        return high_priority + random_experiences
-
-    def prepareNetworkInputs(self, step):
-        """
-        Convert game state information to network input features
-        
-        Args:
-            step: Dictionary containing game state information
-            
-        Returns:
-            Numpy array with processed features
-        """
-        feature_vector = []
-        
-        # Health features
-        player_health = step.get("health", 100)
-        enemy_health = step.get("enemy_health", 100)
-        feature_vector.append(player_health)
-        feature_vector.append(enemy_health)
-        
-        # Health percentages and advantage
-        player_health_pct = player_health / 100.0
-        enemy_health_pct = enemy_health / 100.0
-        health_advantage = player_health_pct - enemy_health_pct
-        feature_vector.append(player_health_pct)
-        feature_vector.append(enemy_health_pct)
-        feature_vector.append(health_advantage)
-        
-        # Position features
-        player_x = step.get("x_position", 0)
-        player_y = step.get("y_position", 0)
-        enemy_x = step.get("enemy_x_position", 0)
-        enemy_y = step.get("enemy_y_position", 0)
-        feature_vector.append(player_x)
-        feature_vector.append(player_y)
-        feature_vector.append(enemy_x)
-        feature_vector.append(enemy_y)
-        
-        # Distance features
-        x_distance = abs(player_x - enemy_x)
-        y_distance = abs(player_y - enemy_y)
-        euclidean_distance = np.sqrt(x_distance**2 + y_distance**2)
-        feature_vector.append(x_distance)
-        feature_vector.append(y_distance)
-        feature_vector.append(euclidean_distance)
-        
-        # Directional features
-        facing_right = 1 if player_x < enemy_x else 0
-        feature_vector.append(facing_right)
-        enemy_above = 1 if player_y > enemy_y else 0
-        feature_vector.append(enemy_above)
-        
-        # Character state features (one-hot encoded)
-        enemy_status = step.get("enemy_status", 512)
-        player_status = step.get("status", 512)
-        
-        # Check if DeepQAgent.stateIndices exists
-        if hasattr(DeepQAgent, "stateIndices"):
-            # Enemy state one-hot encoding
-            oneHotEnemyState = [0] * len(DeepQAgent.stateIndices.keys())
-            state_index = DeepQAgent.stateIndices.get(enemy_status, 0)
-            oneHotEnemyState[state_index] = 1
-            feature_vector.extend(oneHotEnemyState)
-            
-            # Enemy character one-hot encoding
-            oneHotEnemyChar = [0] * 8
-            enemy_char = step.get("enemy_character", 0)
-            if enemy_char < len(oneHotEnemyChar):
-                oneHotEnemyChar[enemy_char] = 1
-            feature_vector.extend(oneHotEnemyChar)
-            
-            # Player state one-hot encoding
-            oneHotPlayerState = [0] * len(DeepQAgent.stateIndices.keys())
-            state_index = DeepQAgent.stateIndices.get(player_status, 0)
-            oneHotPlayerState[state_index] = 1
-            feature_vector.extend(oneHotPlayerState)
-        
-        # Ensure vector matches expected state size
-        if hasattr(self, "stateSize"):
-            if len(feature_vector) < self.stateSize:
-                feature_vector.extend([0] * (self.stateSize - len(feature_vector)))
-            elif len(feature_vector) > self.stateSize:
-                feature_vector = feature_vector[:self.stateSize]
-        
-        # Reshape for network input (batch size of 1)
-        feature_vector = np.array(feature_vector, dtype=np.float32)
-        feature_vector = np.reshape(feature_vector, [1, -1])
-        return feature_vector
-
-    def trainNetwork(self, data, model):
-        """
-        Train the network using experience data
-        
-        Args:
-            data: List of experience tuples
-            model: The model to train
-            
-        Returns:
-            Updated model
-        """
-        if len(data) == 0:
-            logger.warning("No data available for training. Skipping.")
-            return model
-        
-        # Create minibatch
-        batch_size = min(64, len(data))
-        if batch_size == 0:
-            return model
-        
-        # Sample from experience replay
-        indices = random.sample(range(len(data)), batch_size)
-        minibatch = [data[i] for i in indices]
-        
-        # Use appropriate device
-        device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
-        
-        with tf.device(device):
-            try:
-                # Initialize arrays
-                states_list = []
-                targets_list = []
-                
-                # Process each experience
-                for experience in minibatch:
-                    if len(experience) < 5:
-                        continue
-                        
-                    state = experience[0]
-                    action = experience[1]
-                    reward = experience[2]
-                    done = experience[3]
-                    next_state = experience[4]
-                    
-                    # Ensure action is in valid range
-                    if action >= self.actionSize:
-                        action = action % self.actionSize
-                    
-                    # Get current Q values
-                    current_q = model.predict(state, verbose=0)
-                    
-                    # Calculate target Q value
-                    if done:
-                        target = reward
-                    else:
-                        # Double DQN: Use online network to select action, target network to evaluate
-                        next_action = np.argmax(model.predict(next_state, verbose=0)[0])
-                        next_q = self.target_model.predict(next_state, verbose=0)[0][next_action]
-                        target = reward + self.gamma * next_q
-                    
-                    # Update the Q value for the chosen action
-                    current_q[0][action] = target
-                    
-                    # Add to batch
-                    states_list.append(state[0])
-                    targets_list.append(current_q[0])
-                
-                if not states_list:
-                    logger.warning("No valid experiences in batch. Skipping training.")
-                    return model
-                
-                # Convert lists to numpy arrays
-                states_array = np.array(states_list)
-                targets_array = np.array(targets_list)
-                
-                # Train model
-                history = model.fit(
-                    states_array, 
-                    targets_array,
-                    batch_size=min(len(states_array), 32),
-                    epochs=1,
-                    verbose=0
-                )
-                
-                # Update loss history
-                if hasattr(self, 'lossHistory') and 'loss' in history.history:
-                    loss_value = history.history['loss'][0]
-                    self.lossHistory.on_epoch_end(0, {'loss': float(loss_value)})
-                
-            except Exception as e:
-                logger.error(f"Error in trainNetwork: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-                
-        return model
-
-print("\nGPU configuration summary:")
-print("==========================")
-print("TensorFlow version:", tf.__version__)
-print("CUDA available:", tf.test.is_built_with_cuda())
-print("GPU devices:", tf.config.list_physical_devices("GPU"))
-if len(tf.config.list_physical_devices("GPU")) > 0:
-    print("GPU device name:", tf.test.gpu_device_name())
-else:
-    print("No GPU found. Using CPU only.")
-print("==========================\n")
-
-class DeepQAgent(Agent):
-    """Deep Q-Learning agent with Double DQN and Dueling architecture"""
-    
-    EPSILON_MIN = 0.05
-    DEFAULT_DISCOUNT_RATE = 0.98
-    DEFAULT_LEARNING_RATE = 0.0001
-    stateIndices = {
-        512: 0, 514: 1, 516: 2, 518: 3, 520: 4, 
-        522: 5, 524: 6, 526: 7, 532: 8,
-    }
-    doneKeys = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
-    ACTION_BUTTONS = ["X", "Y", "Z", "A", "B", "C"]
-
-    def __init__(self, stateSize=32, resume=False, name=None, moveList=Moves):
-        """
-        Initialize the DeepQAgent
-        
-        Args:
-            stateSize: Size of the state vector
-            resume: Whether to resume training from saved model
-            name: Name of the agent
-            moveList: List of available moves
-        """
-        self.stateSize = stateSize
-        self.actionSize = len(moveList) if hasattr(moveList, '__len__') else 20
-        self.gamma = DeepQAgent.DEFAULT_DISCOUNT_RATE
-        self.learningRate = DeepQAgent.DEFAULT_LEARNING_RATE
-        self.lossHistory = LossHistory()
-        self.total_timesteps = 0
-        self.episode_count = 0
-        self.update_target_every = 6  # Update target network every 6 episodes
-        self.lr_decay = 0.995
-        self._last_logged_epsilon = None  # For tracking epsilon changes
-        
-        # Initialize base agent
-        super(DeepQAgent, self).__init__(resume=resume, name=name, moveList=moveList)
-        
-        # Create target network
-        self.target_model = self.initializeNetwork()
-        self.target_model.set_weights(self.model.get_weights())
-        
-        # Set initial epsilon
-        if resume and hasattr(self, "total_timesteps"):
-            self.calculateEpsilonFromTimesteps()
-            logger.info(f"Resuming with epsilon: {self.epsilon}")
-        else:
-            self.epsilon = 1.0
-            logger.info(f"Starting with epsilon: {self.epsilon}")
-
-    def recordStep(self, step):
-        """
-        Record a step with enhanced reward shaping
-        
-        Args:
-            step: List containing state, action, reward, next_state and done information
-        """
-        modified_step = list(step)
-        
-        # Extract state information
-        current_state = step[Agent.STATE_INDEX]
-        next_state = step[Agent.NEXT_STATE_INDEX]
-        reward = step[Agent.REWARD_INDEX]
-        
-        # Health metrics
-        current_player_health = current_state.get("health", 100)
-        current_enemy_health = current_state.get("enemy_health", 100)
-        next_player_health = next_state.get("health", 100)
-        next_enemy_health = next_state.get("enemy_health", 100)
-        
-        # Calculate damages
-        damage_dealt = max(0, current_enemy_health - next_enemy_health)
-        damage_taken = max(0, current_player_health - next_player_health)
-        
-        # Position information
-        player_x = current_state.get("x_position", 0)
-        enemy_x = current_state.get("enemy_x_position", 0)
-        distance = abs(player_x - enemy_x)
-        
-        # Combo counter
-        combo_count = current_state.get("combo_count", 0)
-        
-        # Damage rewards
-        damage_reward = damage_dealt * 0.2
-        damage_penalty = damage_taken * -0.2
-        modified_reward = reward + damage_reward + damage_penalty
-        
-        # Victory and defeat rewards
-        if next_enemy_health <= 0:
-            modified_reward += 150 + (next_player_health / 100 * 50)  # More health = better victory
-        elif next_player_health <= 0:
-            modified_reward -= 75
-        
-        # Combo bonus
-        combo_bonus = combo_count * 3
-        modified_reward += combo_bonus
-        
-        # Positional advantage reward
-        if distance < 50:
-            modified_reward += 0.1 * (50 - distance)  # Closer = better when in range
-        
-        # Update reward
-        modified_step[Agent.REWARD_INDEX] = modified_reward
-        
-        # Calculate experience priority
-        priority = abs(modified_reward) + 0.01
-        if next_enemy_health <= 0:
-            priority *= 8.0  # Highly prioritize winning experiences
-        if damage_dealt > 10:
-            priority *= 2.0  # Prioritize effective attacks
-        
-        # Save to memory
-        modified_step_with_priority = modified_step + [priority]
-        self.memory.append(modified_step_with_priority)
-        self.total_timesteps += 1
-        self.episode_rewards.append(modified_reward)
-
-    def calculateEpsilonFromTimesteps(self):
-        """
-        Calculate epsilon value based on timesteps with consistent decay schedule
-        """
-        START_EPSILON = 1.0
-        TIMESTEPS_TO_MIN_EPSILON = 1500000  # Corrected value
-        
-        # Linear decay
-        decay_per_step = (START_EPSILON - DeepQAgent.EPSILON_MIN) / TIMESTEPS_TO_MIN_EPSILON
-        self.epsilon = max(DeepQAgent.EPSILON_MIN, START_EPSILON - (decay_per_step * self.total_timesteps))
-        
-        # Boost epsilon if performance is poor
-        if self.episodes_completed > 20:
-            # Calculate approximate win rate from recent episodes
-            win_rate = sum(1 for r in self.avg_reward_history[-20:] if r > 50) / min(len(self.avg_reward_history), 20) if self.avg_reward_history else 0
-            if win_rate < 0.15:
-                self.epsilon = min(0.8, self.epsilon + 0.15)
-                logger.info(f"Performance boost: epsilon increased to {self.epsilon} due to low win rate")
-        
-        # Apply additional decay
-        self.epsilon *= 0.995
-        
-        # Log significant changes
-        if hasattr(self, '_last_logged_epsilon') and self._last_logged_epsilon is not None:
-            if abs(self._last_logged_epsilon - self.epsilon) > 0.05:
-                logger.info(f"Epsilon updated: {self._last_logged_epsilon:.4f} -> {self.epsilon:.4f}")
-                self._last_logged_epsilon = self.epsilon
-        else:
-            self._last_logged_epsilon = self.epsilon
-
-    def updateEpsilon(self):
-        """Update epsilon based on current timesteps"""
-        self.calculateEpsilonFromTimesteps()
 
     def getMove(self, obs, info):
         """
@@ -989,6 +617,277 @@ class DeepQAgent(Agent):
             logger.info(f"Initialized Dueling DQN with residual connections (~{params:,} parameters)")
             
             return model
+
+    def prepareMemoryForTraining(self, memory):
+        """
+        Prepare memory for training with consistent prioritization scheme
+        
+        Args:
+            memory: CircularBuffer object containing experiences
+            
+        Returns:
+            List of experiences prioritized for training
+        """
+        experiences = memory.get_all()
+        if not experiences:
+            return []
+        
+        # Calculate priorities based on clear criteria
+        data_with_priority = []
+        for step in experiences:
+            state = step[DeepQAgent.STATE_INDEX]
+            next_state = step[DeepQAgent.NEXT_STATE_INDEX]
+            action = step[DeepQAgent.ACTION_INDEX]
+            reward = step[DeepQAgent.REWARD_INDEX]
+            done = step[DeepQAgent.DONE_INDEX]
+            
+            # Base priority on reward magnitude
+            priority = abs(reward) + 0.01  # Small constant to ensure non-zero priority
+            
+            # Prioritize terminal states where agent wins
+            if next_state.get('enemy_health', 100) <= 0:
+                priority *= 5.0
+            
+            # Prioritize states where agent dealt significant damage
+            damage_dealt = max(0, state.get('enemy_health', 100) - next_state.get('enemy_health', 100))
+            if damage_dealt > 10:
+                priority *= 2.0
+            
+            processed_state = self.prepareNetworkInputs(state)
+            processed_next_state = self.prepareNetworkInputs(next_state)
+            
+            data_with_priority.append([processed_state, action, reward, done, processed_next_state, priority])
+        
+        # Balance between high priority and exploration with fixed ratios
+        data_with_priority.sort(key=lambda x: x[5], reverse=True)
+        total_size = len(data_with_priority)
+        
+        # Get top 70% high priority experiences
+        high_priority_count = int(0.7 * total_size)
+        high_priority = data_with_priority[:high_priority_count]
+        
+        # Get 30% random experiences for exploration
+        remaining = data_with_priority[high_priority_count:]
+        random_count = min(int(0.3 * total_size), len(remaining))
+        random_experiences = random.sample(remaining, random_count) if random_count > 0 and remaining else []
+        
+        # Combine and return
+        return high_priority + random_experiences
+
+    def prepareNetworkInputs(self, step):
+        """
+        Convert game state information to network input features
+        
+        Args:
+            step: Dictionary containing game state information
+            
+        Returns:
+            Numpy array with processed features
+        """
+        feature_vector = []
+        
+        # Health features
+        player_health = step.get("health", 100)
+        enemy_health = step.get("enemy_health", 100)
+        feature_vector.append(player_health)
+        feature_vector.append(enemy_health)
+        
+        # Health percentages and advantage
+        player_health_pct = player_health / 100.0
+        enemy_health_pct = enemy_health / 100.0
+        health_advantage = player_health_pct - enemy_health_pct
+        feature_vector.append(player_health_pct)
+        feature_vector.append(enemy_health_pct)
+        feature_vector.append(health_advantage)
+        
+        # Position features
+        player_x = step.get("x_position", 0)
+        player_y = step.get("y_position", 0)
+        enemy_x = step.get("enemy_x_position", 0)
+        enemy_y = step.get("enemy_y_position", 0)
+        feature_vector.append(player_x)
+        feature_vector.append(player_y)
+        feature_vector.append(enemy_x)
+        feature_vector.append(enemy_y)
+        
+        # Distance features
+        x_distance = abs(player_x - enemy_x)
+        y_distance = abs(player_y - enemy_y)
+        euclidean_distance = np.sqrt(x_distance**2 + y_distance**2)
+        feature_vector.append(x_distance)
+        feature_vector.append(y_distance)
+        feature_vector.append(euclidean_distance)
+        
+        # Directional features
+        facing_right = 1 if player_x < enemy_x else 0
+        feature_vector.append(facing_right)
+        enemy_above = 1 if player_y > enemy_y else 0
+        feature_vector.append(enemy_above)
+        
+        # Character state features (one-hot encoded)
+        enemy_status = step.get("enemy_status", 512)
+        player_status = step.get("status", 512)
+        
+        # Enemy state one-hot encoding
+        oneHotEnemyState = [0] * len(DeepQAgent.stateIndices.keys())
+        state_index = DeepQAgent.stateIndices.get(enemy_status, 0)
+        oneHotEnemyState[state_index] = 1
+        feature_vector.extend(oneHotEnemyState)
+        
+        # Enemy character one-hot encoding
+        oneHotEnemyChar = [0] * 8
+        enemy_char = step.get("enemy_character", 0)
+        if enemy_char < len(oneHotEnemyChar):
+            oneHotEnemyChar[enemy_char] = 1
+        feature_vector.extend(oneHotEnemyChar)
+        
+        # Player state one-hot encoding
+        oneHotPlayerState = [0] * len(DeepQAgent.stateIndices.keys())
+        state_index = DeepQAgent.stateIndices.get(player_status, 0)
+        oneHotPlayerState[state_index] = 1
+        feature_vector.extend(oneHotPlayerState)
+        
+        # Ensure vector matches expected state size
+        if hasattr(self, "stateSize"):
+            if len(feature_vector) < self.stateSize:
+                feature_vector.extend([0] * (self.stateSize - len(feature_vector)))
+            elif len(feature_vector) > self.stateSize:
+                feature_vector = feature_vector[:self.stateSize]
+        
+        # Reshape for network input (batch size of 1)
+        feature_vector = np.array(feature_vector, dtype=np.float32)
+        feature_vector = np.reshape(feature_vector, [1, -1])
+        return feature_vector
+
+    def trainNetwork(self, data, model):
+        """
+        Train the network using experience data
+        
+        Args:
+            data: List of experience tuples
+            model: The model to train
+            
+        Returns:
+            Updated model
+        """
+        if len(data) == 0:
+            logger.warning("No data available for training. Skipping.")
+            return model
+        
+        # Create minibatch
+        batch_size = min(64, len(data))
+        if batch_size == 0:
+            return model
+        
+        # Sample from experience replay
+        indices = random.sample(range(len(data)), batch_size)
+        minibatch = [data[i] for i in indices]
+        
+        # Use appropriate device
+        device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
+        
+        with tf.device(device):
+            try:
+                # Initialize arrays
+                states_list = []
+                targets_list = []
+                
+                # Process each experience
+                for experience in minibatch:
+                    if len(experience) < 5:
+                        continue
+                        
+                    state = experience[0]
+                    action = experience[1]
+                    reward = experience[2]
+                    done = experience[3]
+                    next_state = experience[4]
+                    
+                    # Ensure action is in valid range
+                    if action >= self.actionSize:
+                        action = action % self.actionSize
+                    
+                    # Get current Q values
+                    current_q = model.predict(state, verbose=0)
+                    
+                    # Calculate target Q value
+                    if done:
+                        target = reward
+                    else:
+                        # Double DQN: Use online network to select action, target network to evaluate
+                        next_action = np.argmax(model.predict(next_state, verbose=0)[0])
+                        next_q = self.target_model.predict(next_state, verbose=0)[0][next_action]
+                        target = reward + self.gamma * next_q
+                    
+                    # Update the Q value for the chosen action
+                    current_q[0][action] = target
+                    
+                    # Add to batch
+                    states_list.append(state[0])
+                    targets_list.append(current_q[0])
+                
+                if not states_list:
+                    logger.warning("No valid experiences in batch. Skipping training.")
+                    return model
+                
+                # Convert lists to numpy arrays
+                states_array = np.array(states_list)
+                targets_array = np.array(targets_list)
+                
+                # Train model
+                history = model.fit(
+                    states_array, 
+                    targets_array,
+                    batch_size=min(len(states_array), 32),
+                    epochs=1,
+                    verbose=0
+                )
+                
+                # Update loss history
+                if hasattr(self, 'lossHistory') and 'loss' in history.history:
+                    loss_value = history.history['loss'][0]
+                    self.lossHistory.on_epoch_end(0, {'loss': float(loss_value)})
+                
+            except Exception as e:
+                logger.error(f"Error in trainNetwork: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                
+        return model
+
+    def calculateEpsilonFromTimesteps(self):
+        """
+        Calculate epsilon value based on timesteps with consistent decay schedule
+        """
+        START_EPSILON = 1.0
+        TIMESTEPS_TO_MIN_EPSILON = 1500000  # Corrected value
+        
+        # Linear decay
+        decay_per_step = (START_EPSILON - DeepQAgent.EPSILON_MIN) / TIMESTEPS_TO_MIN_EPSILON
+        self.epsilon = max(DeepQAgent.EPSILON_MIN, START_EPSILON - (decay_per_step * self.total_timesteps))
+        
+        # Boost epsilon if performance is poor
+        if self.episodes_completed > 20:
+            # Calculate approximate win rate from recent episodes
+            win_rate = sum(1 for r in self.avg_reward_history[-20:] if r > 50) / min(len(self.avg_reward_history), 20) if self.avg_reward_history else 0
+            if win_rate < 0.15:
+                self.epsilon = min(0.8, self.epsilon + 0.15)
+                logger.info(f"Performance boost: epsilon increased to {self.epsilon} due to low win rate")
+        
+        # Apply additional decay
+        self.epsilon *= 0.995
+        
+        # Log significant changes
+        if hasattr(self, '_last_logged_epsilon') and self._last_logged_epsilon is not None:
+            if abs(self._last_logged_epsilon - self.epsilon) > 0.05:
+                logger.info(f"Epsilon updated: {self._last_logged_epsilon:.4f} -> {self.epsilon:.4f}")
+                self._last_logged_epsilon = self.epsilon
+        else:
+            self._last_logged_epsilon = self.epsilon
+
+    def updateEpsilon(self):
+        """Update epsilon based on current timesteps"""
+        self.calculateEpsilonFromTimesteps()
 
 # Example usage
 if __name__ == "__main__":
