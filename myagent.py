@@ -71,6 +71,9 @@ class CircularBuffer:
     
     def sample(self, batch_size, weights=None):
         """Sample elements from buffer with optional weights for prioritization"""
+        if self.size == 0:
+            return [], []
+            
         if weights is not None:
             indices = random.choices(range(self.size), weights=weights[:self.size], k=min(batch_size, self.size))
         else:
@@ -80,7 +83,7 @@ class CircularBuffer:
     def update_priorities(self, indices, priorities):
         """Update priorities for specific indices"""
         for idx, priority in zip(indices, priorities):
-            if self.buffer[idx] is not None:
+            if 0 <= idx < self.size and self.buffer[idx] is not None:
                 self.buffer[idx][-1] = priority
     
     def get_all(self):
@@ -134,6 +137,7 @@ class Agent:
 
         self.lr_step_size = 50000
         self.last_lr_update = 0
+        self.lr_decay = 0.995
         
         if self.__class__.__name__ != "Agent":
             self.model = self.initializeNetwork()
@@ -145,86 +149,101 @@ class Agent:
                 logger.info(f"Starting fresh training for {self.name}")
 
     def prepareForNextFight(self):
+        """Reset agent memory and episode rewards for a new fight"""
         self.memory = CircularBuffer(Agent.MAX_DATA_LENGTH)
         self.episode_rewards = []
 
     def getRandomMove(self, info):
+        """Get a random move from the available move list"""
         moveName = random.choice(list(self.moveList))
         frameInputs = self.convertMoveToFrameInputs(moveName, info)
         return moveName.value, frameInputs
 
     def convertMoveToFrameInputs(self, move, info):
+        """Convert a move to frame inputs"""
         frameInputs = self.moveList.getMoveInputs(move)
         frameInputs = self.formatInputsForDirection(move, frameInputs, info)
         return frameInputs
 
     def formatInputsForDirection(self, move, frameInputs, info):
+        """Format move inputs based on player and enemy positions"""
         if not self.moveList.isDirectionalMove(move):
             return frameInputs
         if "x_position" not in info:
             info["x_position"] = 100
         if "enemy_x_position" not in info:
             info["enemy_x_position"] = 200
+            
+        # Return correct directional input based on relative positions
         if info["x_position"] < info["enemy_x_position"]:
-            return (
-                frameInputs[0]
-                if isinstance(frameInputs, list) and len(frameInputs) > 0
-                else frameInputs
-            )
+            return (frameInputs[0] if isinstance(frameInputs, list) and len(frameInputs) > 0 else frameInputs)
         else:
-            return (
-                frameInputs[1]
-                if isinstance(frameInputs, list) and len(frameInputs) > 1
-                else frameInputs
-            )
+            return (frameInputs[1] if isinstance(frameInputs, list) and len(frameInputs) > 1 else frameInputs)
 
     def recordStep(self, step):
+        """
+        Record a step in the agent's memory with calculated reward
+        
+        Args:
+            step: List containing state, action, reward, next_state and done information
+        """
         modified_step = list(step)
         
+        # Extract health information
         current_enemy_health = step[Agent.STATE_INDEX].get("enemy_health", 100)
         current_player_health = step[Agent.STATE_INDEX].get("health", 100)
         next_enemy_health = step[Agent.NEXT_STATE_INDEX].get("enemy_health", 100)
         next_player_health = step[Agent.NEXT_STATE_INDEX].get("health", 100)
         
+        # Calculate damage dealt and taken
         enemy_damage = max(0, current_enemy_health - next_enemy_health)
         player_damage = max(0, current_player_health - next_player_health)
         
+        # Base reward from environment
         reward = modified_step[Agent.REWARD_INDEX]
         
-        health_reward = player_damage * -0.2
-        enemy_health_reward = enemy_damage * 0.3
+        # Health-based rewards
+        health_reward = -0.2 * player_damage  # Negative reward for taking damage
+        enemy_health_reward = 0.3 * enemy_damage  # Positive reward for dealing damage
         
+        # Win/loss rewards
         if next_enemy_health <= 0:
-            reward += 50
+            reward += 50  # Big reward for winning
         if next_player_health <= 0:
-            reward -= 25
+            reward -= 25  # Penalty for losing
             
+        # Positional rewards
         x_distance = abs(step[Agent.STATE_INDEX].get("x_position", 0) - 
                          step[Agent.STATE_INDEX].get("enemy_x_position", 0))
         
+        # Strategic positioning based on health advantage
         player_attacking = (current_player_health > 50 and current_enemy_health < 50)
         position_reward = 0
-        if player_attacking and x_distance < 50:
+        if player_attacking and x_distance < 50:  # Close when attacking
             position_reward = 0.1
-        elif not player_attacking and x_distance > 100:
+        elif not player_attacking and x_distance > 100:  # Far when defensive
             position_reward = 0.1
         
+        # Calculate final reward
         total_reward = reward + health_reward + enemy_health_reward + position_reward
         
         modified_step[Agent.REWARD_INDEX] = total_reward
         
-        priority = abs(total_reward) + 0.01
+        # Calculate priority for experience replay
+        priority = abs(total_reward) + 0.01  # Ensure non-zero priority
         if next_enemy_health <= 0:
-            priority *= 3.0
+            priority *= 3.0  # Prioritize winning experiences
         if enemy_damage > 10:
-            priority *= 2.0
+            priority *= 2.0  # Prioritize successful attacks
         
+        # Append experience to memory
         modified_step_with_priority = modified_step + [priority]
         self.memory.append(modified_step_with_priority)
         self.total_timesteps += 1
         self.episode_rewards.append(total_reward)
 
     def updateEpisodeMetrics(self):
+        """Update metrics at the end of an episode"""
         self.episodes_completed += 1
         if self.episode_rewards:
             avg_reward = sum(self.episode_rewards) / len(self.episode_rewards)
@@ -232,25 +251,34 @@ class Agent:
             self.episode_rewards = []
 
     def reviewFight(self):
-        # 1 fight one episode
+        """
+        Review and learn from the previous fight (episode)
+        Updates the target network, trains the model, and updates metrics
+        """
+        # Increment episode counter
         self.episode_count += 1
         
-        # every 6 episode we save model
+        # Update target network periodically
         if self.episode_count % self.update_target_every == 0:
-            # we set the weight
-            self.target_model.set_weights(self.model.get_weights())
-            logger.info(f"Target network updated at episode {self.episode_count}")
+            if hasattr(self, "target_model"):
+                self.target_model.set_weights(self.model.get_weights())
+                logger.info(f"Target network updated at episode {self.episode_count}")
         
+        # Train the network using recorded experiences
         try:
-            data = self.prepareMemoryForTraining(self.memory)
-            if len(data) > 0:
+            training_data = self.prepareMemoryForTraining(self.memory)
+            if len(training_data) > 0:
+                # Temporarily reduce learning rate for stability
                 temp_lr = self.model.optimizer.learning_rate.numpy() * 0.5
                 self.model.optimizer.learning_rate.assign(temp_lr)
-                self.model = self.trainNetwork(data, self.model)
+                self.model = self.trainNetwork(training_data, self.model)
                 self.model.optimizer.learning_rate.assign(temp_lr * 2)
         except Exception as e:
             logger.error(f"Error training network: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         
+        # Update episode metrics
         try:
             self.updateEpisodeMetrics()
             if hasattr(self, "lossHistory") and hasattr(self.lossHistory, "losses") and len(self.lossHistory.losses) > 0:
@@ -259,12 +287,14 @@ class Agent:
         except Exception as e:
             logger.error(f"Error updating metrics: {e}")
         
+        # Update exploration rate
         if hasattr(self, "updateEpsilon"):
             try:
                 self.updateEpsilon()
             except Exception as e:
                 logger.error(f"Error updating epsilon: {e}")
         
+        # Apply learning rate decay
         try:
             current_time = self.total_timesteps
             if current_time - self.last_lr_update >= self.lr_step_size:
@@ -276,6 +306,7 @@ class Agent:
         except Exception as e:
             logger.error(f"Error applying learning rate decay: {e}")
         
+        # Save model and stats
         try:
             self.saveModel()
             self.saveStats()
@@ -284,10 +315,13 @@ class Agent:
             logger.error(f"Error saving or printing: {e}")
 
     def loadModel(self):
+        """Load model weights from file if available"""
         models_dir = os.path.join(self.current_dir, "models")
         os.makedirs(models_dir, exist_ok=True)
         model_path = os.path.join(models_dir, f"{self.getModelName()}")
         load_successful = False
+        
+        # Try different file extensions
         for ext in [".weights.h5", ".h5", ".keras"]:
             full_path = model_path + ext
             if os.path.exists(full_path):
@@ -298,6 +332,8 @@ class Agent:
                     break
                 except Exception as e:
                     logger.error(f"Error loading model from {full_path}: {e}")
+        
+        # Update target network if available
         if load_successful and hasattr(self, "target_model"):
             self.target_model.set_weights(self.model.get_weights())
             logger.info("Target network synchronized")
@@ -305,6 +341,7 @@ class Agent:
             logger.warning("No valid model file found, using new model.")
 
     def saveModel(self):
+        """Save model weights to file"""
         models_dir = os.path.join(self.current_dir, "models")
         os.makedirs(models_dir, exist_ok=True)
         model_path = os.path.join(models_dir, f"{self.getModelName()}.weights.h5")
@@ -315,10 +352,13 @@ class Agent:
             logger.error(f"Error saving model: {e}")
 
     def saveStats(self):
+        """Save agent statistics and memory to file"""
         stats_dir = os.path.join(self.current_dir, "stats")
         os.makedirs(stats_dir, exist_ok=True)
         stats_path = os.path.join(stats_dir, f"{self.name}_stats.json")
         memory_path = os.path.join(stats_dir, f"{self.name}_memory.pkl")
+        
+        # Collect stats
         stats = {
             "total_timesteps": self.total_timesteps,
             "episodes_completed": self.episodes_completed,
@@ -327,6 +367,8 @@ class Agent:
             "last_lr_update": getattr(self, "last_lr_update", 0),
             "episode_count": getattr(self, "episode_count", 0),
         }
+        
+        # Save stats and memory
         try:
             with open(stats_path, "w") as file:
                 json.dump(stats, file, indent=4)
@@ -338,9 +380,12 @@ class Agent:
             logger.error(f"Error saving stats: {e}")
 
     def loadStats(self):
+        """Load agent statistics and memory from file"""
         stats_dir = os.path.join(self.current_dir, "stats")
         stats_path = os.path.join(stats_dir, f"{self.name}_stats.json")
         memory_path = os.path.join(stats_dir, f"{self.name}_memory.pkl")
+        
+        # Load stats if available
         if os.path.exists(stats_path):
             try:
                 with open(stats_path, "r") as file:
@@ -352,11 +397,14 @@ class Agent:
                     self.last_lr_update = stats.get("last_lr_update", 0)
                     if hasattr(self, "episode_count"):
                         self.episode_count = stats.get("episode_count", 0)
+                    # Update epsilon if method exists
                     if hasattr(self, "calculateEpsilonFromTimesteps"):
                         self.calculateEpsilonFromTimesteps()
                     logger.info(f"✓ Loaded stats from {stats_path}")
             except Exception as e:
                 logger.error(f"Error loading stats: {e}")
+        
+        # Load memory if available
         if os.path.exists(memory_path):
             try:
                 with open(memory_path, "rb") as file:
@@ -369,6 +417,7 @@ class Agent:
                 logger.error(f"Error loading memory: {e}")
 
     def printTrainingProgress(self):
+        """Print current training progress"""
         elapsed_time = time.time() - self.training_start_time
         logger.info("\n==== Training Progress ====")
         logger.info(f"Total timesteps: {self.total_timesteps}")
@@ -382,6 +431,7 @@ class Agent:
         logger.info("===========================\n")
 
     def printFinalStats(self):
+        """Print final training statistics"""
         elapsed_time = time.time() - self.training_start_time
         logger.info("\n======= TRAINING SUMMARY =======")
         logger.info(f"Total training timesteps: {self.total_timesteps}")
@@ -394,64 +444,115 @@ class Agent:
         logger.info("=================================\n")
 
     def getModelName(self):
+        """Get the name of the model for file operations"""
         return self.name + "Model"
 
     def getLogsName(self):
+        """Get the name of the logs for file operations"""
         return self.name + "Logs"
 
     def getMove(self, obs, info):
+        """
+        Get the next move - Must be implemented by subclasses
+        
+        Args:
+            obs: Current observation
+            info: Additional game state information
+            
+        Returns:
+            move: Move index
+            frameInputs: Frame inputs for the selected move
+        """
         move, frameInputs = self.getRandomMove(info)
         return move, frameInputs
 
     def initializeNetwork(self):
+        """Initialize the neural network - Must be implemented by subclasses"""
         raise NotImplementedError("Implement this in the inherited agent")
 
     def prepareMemoryForTraining(self, memory):
+        """
+        Prepare memory for training with consistent prioritization scheme
+        
+        Args:
+            memory: CircularBuffer object containing experiences
+            
+        Returns:
+            List of experiences prioritized for training
+        """
         experiences = memory.get_all()
         if not experiences:
             return []
-            
-        action_counts = {}
-        for step in experiences:
-            action = step[Agent.ACTION_INDEX]
-            action_counts[action] = action_counts.get(action, 0) + 1
-            
-        data_with_priority = []
-        beta = 1.0
         
+        # Calculate priorities based on clear criteria
+        data_with_priority = []
         for step in experiences:
-            state = self.prepareNetworkInputs(step[Agent.STATE_INDEX])
+            state = step[Agent.STATE_INDEX]
+            next_state = step[Agent.NEXT_STATE_INDEX]
             action = step[Agent.ACTION_INDEX]
             reward = step[Agent.REWARD_INDEX]
             done = step[Agent.DONE_INDEX]
-            next_state = self.prepareNetworkInputs(step[Agent.NEXT_STATE_INDEX])
-            action_frequency = action_counts[action] / len(experiences)
-            rarity_score = beta * (1.0 - action_frequency)
-            priority = abs(reward) + rarity_score
-            data_with_priority.append([state, action, reward, done, next_state, priority])
+            
+            # Base priority on reward magnitude
+            priority = abs(reward) + 0.01  # Small constant to ensure non-zero priority
+            
+            # Prioritize terminal states where agent wins
+            if next_state.get('enemy_health', 100) <= 0:
+                priority *= 5.0
+            
+            # Prioritize states where agent dealt significant damage
+            damage_dealt = max(0, state.get('enemy_health', 100) - next_state.get('enemy_health', 100))
+            if damage_dealt > 10:
+                priority *= 2.0
+            
+            processed_state = self.prepareNetworkInputs(state)
+            processed_next_state = self.prepareNetworkInputs(next_state)
+            
+            data_with_priority.append([processed_state, action, reward, done, processed_next_state, priority])
         
+        # Balance between high priority and exploration with fixed ratios
         data_with_priority.sort(key=lambda x: x[5], reverse=True)
         total_size = len(data_with_priority)
-        top_percent = int(0.7 * total_size)
-        top_experiences = data_with_priority[:top_percent]
-        remaining = data_with_priority[top_percent:]
+        
+        # Get top 70% high priority experiences
+        high_priority_count = int(0.7 * total_size)
+        high_priority = data_with_priority[:high_priority_count]
+        
+        # Get 30% random experiences for exploration
+        remaining = data_with_priority[high_priority_count:]
         random_count = min(int(0.3 * total_size), len(remaining))
         random_experiences = random.sample(remaining, random_count) if random_count > 0 and remaining else []
-        final_data = top_experiences + random_experiences
-        return final_data
+        
+        # Combine and return
+        return high_priority + random_experiences
 
     def prepareNetworkInputs(self, step):
+        """
+        Convert game state information to network input features
+        
+        Args:
+            step: Dictionary containing game state information
+            
+        Returns:
+            Numpy array with processed features
+        """
         feature_vector = []
+        
+        # Health features
         player_health = step.get("health", 100)
         enemy_health = step.get("enemy_health", 100)
         feature_vector.append(player_health)
         feature_vector.append(enemy_health)
+        
+        # Health percentages and advantage
         player_health_pct = player_health / 100.0
         enemy_health_pct = enemy_health / 100.0
         health_advantage = player_health_pct - enemy_health_pct
         feature_vector.append(player_health_pct)
         feature_vector.append(enemy_health_pct)
         feature_vector.append(health_advantage)
+        
+        # Position features
         player_x = step.get("x_position", 0)
         player_y = step.get("y_position", 0)
         enemy_x = step.get("enemy_x_position", 0)
@@ -460,92 +561,152 @@ class Agent:
         feature_vector.append(player_y)
         feature_vector.append(enemy_x)
         feature_vector.append(enemy_y)
+        
+        # Distance features
         x_distance = abs(player_x - enemy_x)
         y_distance = abs(player_y - enemy_y)
         euclidean_distance = np.sqrt(x_distance**2 + y_distance**2)
         feature_vector.append(x_distance)
         feature_vector.append(y_distance)
         feature_vector.append(euclidean_distance)
+        
+        # Directional features
         facing_right = 1 if player_x < enemy_x else 0
         feature_vector.append(facing_right)
         enemy_above = 1 if player_y > enemy_y else 0
         feature_vector.append(enemy_above)
+        
+        # Character state features (one-hot encoded)
         enemy_status = step.get("enemy_status", 512)
         player_status = step.get("status", 512)
-        oneHotEnemyState = [0] * len(DeepQAgent.stateIndices.keys())
-        state_index = DeepQAgent.stateIndices.get(enemy_status, 0)
-        oneHotEnemyState[state_index] = 1
-        feature_vector += oneHotEnemyState
-        oneHotEnemyChar = [0] * 8
-        enemy_char = step.get("enemy_character", 0)
-        if enemy_char < len(oneHotEnemyChar):
-            oneHotEnemyChar[enemy_char] = 1
-        feature_vector += oneHotEnemyChar
-        oneHotPlayerState = [0] * len(DeepQAgent.stateIndices.keys())
-        state_index = DeepQAgent.stateIndices.get(player_status, 0)
-        oneHotPlayerState[state_index] = 1
-        feature_vector += oneHotPlayerState
         
-        if len(feature_vector) != self.stateSize:
+        # Check if DeepQAgent.stateIndices exists
+        if hasattr(DeepQAgent, "stateIndices"):
+            # Enemy state one-hot encoding
+            oneHotEnemyState = [0] * len(DeepQAgent.stateIndices.keys())
+            state_index = DeepQAgent.stateIndices.get(enemy_status, 0)
+            oneHotEnemyState[state_index] = 1
+            feature_vector.extend(oneHotEnemyState)
+            
+            # Enemy character one-hot encoding
+            oneHotEnemyChar = [0] * 8
+            enemy_char = step.get("enemy_character", 0)
+            if enemy_char < len(oneHotEnemyChar):
+                oneHotEnemyChar[enemy_char] = 1
+            feature_vector.extend(oneHotEnemyChar)
+            
+            # Player state one-hot encoding
+            oneHotPlayerState = [0] * len(DeepQAgent.stateIndices.keys())
+            state_index = DeepQAgent.stateIndices.get(player_status, 0)
+            oneHotPlayerState[state_index] = 1
+            feature_vector.extend(oneHotPlayerState)
+        
+        # Ensure vector matches expected state size
+        if hasattr(self, "stateSize"):
             if len(feature_vector) < self.stateSize:
-                feature_vector += [0] * (self.stateSize - len(feature_vector))
-            else:
+                feature_vector.extend([0] * (self.stateSize - len(feature_vector)))
+            elif len(feature_vector) > self.stateSize:
                 feature_vector = feature_vector[:self.stateSize]
         
-        feature_vector = np.reshape(feature_vector, [1, self.stateSize])
+        # Reshape for network input (batch size of 1)
+        feature_vector = np.array(feature_vector, dtype=np.float32)
+        feature_vector = np.reshape(feature_vector, [1, -1])
         return feature_vector
 
     def trainNetwork(self, data, model):
+        """
+        Train the network using experience data
+        
+        Args:
+            data: List of experience tuples
+            model: The model to train
+            
+        Returns:
+            Updated model
+        """
         if len(data) == 0:
             logger.warning("No data available for training. Skipping.")
             return model
-            
-        minibatch, _ = self.memory.sample(64)
-        states = []
-        targets = []
+        
+        # Create minibatch
+        batch_size = min(64, len(data))
+        if batch_size == 0:
+            return model
+        
+        # Sample from experience replay
+        indices = random.sample(range(len(data)), batch_size)
+        minibatch = [data[i] for i in indices]
+        
+        # Use appropriate device
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
         
         with tf.device(device):
-            for step in minibatch:
-                state = step[Agent.STATE_INDEX]
-                action = step[Agent.ACTION_INDEX]
-                reward = step[Agent.REWARD_INDEX]
-                next_state = step[Agent.NEXT_STATE_INDEX]
-                done = step[Agent.DONE_INDEX]
-                if action >= self.actionSize:
-                    action = action % self.actionSize
-                state_data = self.prepareNetworkInputs(state)
-                q_values = model.predict(state_data, verbose=0)[0]
-                if len(q_values.shape) > 1:
-                    q_values = q_values.flatten()
-                if len(q_values) != self.actionSize:
-                    q_values = np.ones(self.actionSize) / self.actionSize
-                target = q_values.copy()
-                if done:
-                    target[action] = reward
-                else:
-                    next_state_data = self.prepareNetworkInputs(next_state)
-                    next_q_values = self.target_model.predict(next_state_data, verbose=0)[0]
-                    if len(next_q_values.shape) > 1:
-                        next_q_values = next_q_values.flatten()
-                    if len(next_q_values) != self.actionSize:
-                        next_q_values = np.ones(self.actionSize) / self.actionSize
-                    best_action = np.argmax(model.predict(next_state_data, verbose=0)[0])
-                    target[action] = reward + self.gamma * next_q_values[best_action]
-                states.append(state_data[0])
-                targets.append(target)
-            
-            states = np.array(states)
-            targets = np.array(targets)
-            model.fit(
-                states,
-                targets,
-                batch_size=64,
-                epochs=1,
-                verbose=0,
-                validation_split=0.2,
-                callbacks=[self.lossHistory]
-            )
+            try:
+                # Initialize arrays
+                states_list = []
+                targets_list = []
+                
+                # Process each experience
+                for experience in minibatch:
+                    if len(experience) < 5:
+                        continue
+                        
+                    state = experience[0]
+                    action = experience[1]
+                    reward = experience[2]
+                    done = experience[3]
+                    next_state = experience[4]
+                    
+                    # Ensure action is in valid range
+                    if action >= self.actionSize:
+                        action = action % self.actionSize
+                    
+                    # Get current Q values
+                    current_q = model.predict(state, verbose=0)
+                    
+                    # Calculate target Q value
+                    if done:
+                        target = reward
+                    else:
+                        # Double DQN: Use online network to select action, target network to evaluate
+                        next_action = np.argmax(model.predict(next_state, verbose=0)[0])
+                        next_q = self.target_model.predict(next_state, verbose=0)[0][next_action]
+                        target = reward + self.gamma * next_q
+                    
+                    # Update the Q value for the chosen action
+                    current_q[0][action] = target
+                    
+                    # Add to batch
+                    states_list.append(state[0])
+                    targets_list.append(current_q[0])
+                
+                if not states_list:
+                    logger.warning("No valid experiences in batch. Skipping training.")
+                    return model
+                
+                # Convert lists to numpy arrays
+                states_array = np.array(states_list)
+                targets_array = np.array(targets_list)
+                
+                # Train model
+                history = model.fit(
+                    states_array, 
+                    targets_array,
+                    batch_size=min(len(states_array), 32),
+                    epochs=1,
+                    verbose=0
+                )
+                
+                # Update loss history
+                if hasattr(self, 'lossHistory') and 'loss' in history.history:
+                    loss_value = history.history['loss'][0]
+                    self.lossHistory.on_epoch_end(0, {'loss': float(loss_value)})
+                
+            except Exception as e:
+                logger.error(f"Error in trainNetwork: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                
         return model
 
 print("\nGPU configuration summary:")
@@ -560,16 +721,28 @@ else:
 print("==========================\n")
 
 class DeepQAgent(Agent):
+    """Deep Q-Learning agent with Double DQN and Dueling architecture"""
+    
     EPSILON_MIN = 0.05
     DEFAULT_DISCOUNT_RATE = 0.98
     DEFAULT_LEARNING_RATE = 0.0001
     stateIndices = {
-        512: 0, 514: 1, 516: 2, 518: 3, 520: 4, 522: 5, 524: 6, 526: 7, 532: 8,
+        512: 0, 514: 1, 516: 2, 518: 3, 520: 4, 
+        522: 5, 524: 6, 526: 7, 532: 8,
     }
     doneKeys = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
     ACTION_BUTTONS = ["X", "Y", "Z", "A", "B", "C"]
 
     def __init__(self, stateSize=32, resume=False, name=None, moveList=Moves):
+        """
+        Initialize the DeepQAgent
+        
+        Args:
+            stateSize: Size of the state vector
+            resume: Whether to resume training from saved model
+            name: Name of the agent
+            moveList: List of available moves
+        """
         self.stateSize = stateSize
         self.actionSize = len(moveList) if hasattr(moveList, '__len__') else 20
         self.gamma = DeepQAgent.DEFAULT_DISCOUNT_RATE
@@ -577,15 +750,18 @@ class DeepQAgent(Agent):
         self.lossHistory = LossHistory()
         self.total_timesteps = 0
         self.episode_count = 0
-        # every 6 episode we save the model
-        self.update_target_every = 6
+        self.update_target_every = 6  # Update target network every 6 episodes
         self.lr_decay = 0.995
+        self._last_logged_epsilon = None  # For tracking epsilon changes
         
+        # Initialize base agent
         super(DeepQAgent, self).__init__(resume=resume, name=name, moveList=moveList)
         
+        # Create target network
         self.target_model = self.initializeNetwork()
         self.target_model.set_weights(self.model.get_weights())
         
+        # Set initial epsilon
         if resume and hasattr(self, "total_timesteps"):
             self.calculateEpsilonFromTimesteps()
             logger.info(f"Resuming with epsilon: {self.epsilon}")
@@ -594,23 +770,35 @@ class DeepQAgent(Agent):
             logger.info(f"Starting with epsilon: {self.epsilon}")
 
     def recordStep(self, step):
+        """
+        Record a step with enhanced reward shaping
+        
+        Args:
+            step: List containing state, action, reward, next_state and done information
+        """
         modified_step = list(step)
+        
+        # Extract state information
         current_state = step[Agent.STATE_INDEX]
         next_state = step[Agent.NEXT_STATE_INDEX]
         reward = step[Agent.REWARD_INDEX]
         
+        # Health metrics
         current_player_health = current_state.get("health", 100)
         current_enemy_health = current_state.get("enemy_health", 100)
         next_player_health = next_state.get("health", 100)
         next_enemy_health = next_state.get("enemy_health", 100)
         
+        # Calculate damages
         damage_dealt = max(0, current_enemy_health - next_enemy_health)
         damage_taken = max(0, current_player_health - next_player_health)
         
+        # Position information
         player_x = current_state.get("x_position", 0)
         enemy_x = current_state.get("enemy_x_position", 0)
         distance = abs(player_x - enemy_x)
         
+        # Combo counter
         combo_count = current_state.get("combo_count", 0)
         
         # Damage rewards
@@ -618,9 +806,9 @@ class DeepQAgent(Agent):
         damage_penalty = damage_taken * -0.2
         modified_reward = reward + damage_reward + damage_penalty
         
-        # Victory and defeat
+        # Victory and defeat rewards
         if next_enemy_health <= 0:
-            modified_reward += 150 + (next_player_health / 100 * 50)
+            modified_reward += 150 + (next_player_health / 100 * 50)  # More health = better victory
         elif next_player_health <= 0:
             modified_reward -= 75
         
@@ -628,259 +816,236 @@ class DeepQAgent(Agent):
         combo_bonus = combo_count * 3
         modified_reward += combo_bonus
         
-        # Positional advantage
+        # Positional advantage reward
         if distance < 50:
-            modified_reward += 0.1 * (50 - distance)
+            modified_reward += 0.1 * (50 - distance)  # Closer = better when in range
         
+        # Update reward
         modified_step[Agent.REWARD_INDEX] = modified_reward
         
+        # Calculate experience priority
         priority = abs(modified_reward) + 0.01
         if next_enemy_health <= 0:
-            priority *= 8.0
+            priority *= 8.0  # Highly prioritize winning experiences
         if damage_dealt > 10:
-            priority *= 2.0
+            priority *= 2.0  # Prioritize effective attacks
         
+        # Save to memory
         modified_step_with_priority = modified_step + [priority]
         self.memory.append(modified_step_with_priority)
         self.total_timesteps += 1
         self.episode_rewards.append(modified_reward)
 
     def calculateEpsilonFromTimesteps(self):
+        """
+        Calculate epsilon value based on timesteps with consistent decay schedule
+        """
         START_EPSILON = 1.0
-        TIMESTEPS_TO_MIN_EPSILON = 750000  # Note: Should be 1500000 for 50% longer than 1000000, assuming typo
+        TIMESTEPS_TO_MIN_EPSILON = 1500000  # Corrected value
+        
+        # Linear decay
         decay_per_step = (START_EPSILON - DeepQAgent.EPSILON_MIN) / TIMESTEPS_TO_MIN_EPSILON
         self.epsilon = max(DeepQAgent.EPSILON_MIN, START_EPSILON - (decay_per_step * self.total_timesteps))
         
+        # Boost epsilon if performance is poor
         if self.episodes_completed > 20:
-            win_rate = sum(1 for r in self.episode_rewards[-100:] if r > 0) / min(len(self.episode_rewards), 100) if self.episode_rewards else 0
+            # Calculate approximate win rate from recent episodes
+            win_rate = sum(1 for r in self.avg_reward_history[-20:] if r > 50) / min(len(self.avg_reward_history), 20) if self.avg_reward_history else 0
             if win_rate < 0.15:
                 self.epsilon = min(0.8, self.epsilon + 0.15)
-                logger.info(f"Performance boost: epsilon increased to {self.epsilon}")
+                logger.info(f"Performance boost: epsilon increased to {self.epsilon} due to low win rate")
         
+        # Apply additional decay
         self.epsilon *= 0.995
+        
+        # Log significant changes
+        if hasattr(self, '_last_logged_epsilon') and self._last_logged_epsilon is not None:
+            if abs(self._last_logged_epsilon - self.epsilon) > 0.05:
+                logger.info(f"Epsilon updated: {self._last_logged_epsilon:.4f} -> {self.epsilon:.4f}")
+                self._last_logged_epsilon = self.epsilon
+        else:
+            self._last_logged_epsilon = self.epsilon
 
     def updateEpsilon(self):
-        old_epsilon = self.epsilon
+        """Update epsilon based on current timesteps"""
         self.calculateEpsilonFromTimesteps()
-        if abs(old_epsilon - self.epsilon) > 0.01:
-            logger.info(f"Epsilon updated: {old_epsilon:.4f} -> {self.epsilon:.4f}")
 
     def getMove(self, obs, info):
+        """
+        Get the next move using epsilon-greedy policy
+        
+        Args:
+            obs: Current observation
+            info: Additional information about the game state
+            
+        Returns:
+            move: Selected move index
+            frameInputs: Frame inputs for the selected move
+        """
+        # Explore: choose random action
         if np.random.rand() <= self.epsilon:
             move, frameInputs = self.getRandomMove(info)
             return move, frameInputs
+        
+        # Exploit: choose best action based on Q-values
         else:
-            stateData = self.prepareNetworkInputs(info)
-            device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
             try:
+                # Prepare state input
+                state_data = self.prepareNetworkInputs(info)
+                
+                # Choose device based on availability
+                device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
+                
                 with tf.device(device):
-                    predictions = self.model.predict(stateData, verbose=0)[0]
-                    if len(predictions.shape) > 1:
-                        predictions = predictions.flatten()
-                    if len(predictions) != self.actionSize:
-                        predictions = np.ones(self.actionSize) / self.actionSize
-                    move = np.argmax(predictions)
+                    # Get model predictions
+                    q_values = self.model.predict(state_data, verbose=0)
+                    
+                    # Handle shape issues consistently
+                    if q_values.ndim == 1:
+                        q_values = np.reshape(q_values, (1, -1))
+                    
+                    # Validate prediction shape
+                    if q_values.shape[1] != self.actionSize:
+                        logger.warning(f"Model output shape mismatch: expected {self.actionSize}, got {q_values.shape[1]}")
+                        return self.getRandomMove(info)
+                    
+                    # Get best action
+                    move = np.argmax(q_values[0])
+                    
+                    # Handle potential index out of range
                     if move >= len(self.moveList):
                         move = move % len(self.moveList)
-                    frameInputs = self.convertMoveToFrameInputs(list(self.moveList)[move], info)
+                    
+                    # Convert move to frame inputs
+                    move_enum = list(self.moveList)[move]
+                    frameInputs = self.convertMoveToFrameInputs(move_enum, info)
+                    
                     return move, frameInputs
+                    
             except Exception as e:
                 logger.error(f"Error in getMove: {e}")
                 return self.getRandomMove(info)
 
     def initializeNetwork(self):
+        """
+        Initialize Dueling DQN network architecture
+        
+        Returns:
+            Compiled Keras model
+        """
+        # Choose appropriate device
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
+        
         with tf.device(device):
+            # Input layer
             input_layer = Input(shape=(self.stateSize,))
+            
+            # Normalize inputs
             x = BatchNormalization()(input_layer)
             
+            # First dense layer
             x = Dense(256, activation='relu')(x)
             x = Dropout(0.3)(x)
+            
+            # Store for residual connection
             residual = x
             
+            # Residual block
             x = Dense(256, activation='linear')(x)
-            x = Add()([residual, x])
+            x = Add()([residual, x])  # Add residual connection
             x = Activation('relu')(x)
             x = BatchNormalization()(x)
             
+            # Feature extraction layer
             x = Dense(64, activation='relu')(x)
             
+            # Dueling DQN architecture:
+            # 1. Value stream - estimates state value
             value_stream = Dense(32, activation='relu')(x)
             value = Dense(1)(value_stream)
             
+            # 2. Advantage stream - estimates advantage of each action
             advantage_stream = Dense(32, activation='relu')(x)
             advantage = Dense(self.actionSize)(advantage_stream)
             
-            q_values = Lambda(lambda a: a[0] + (a[1] - tf.math.reduce_mean(a[1], axis=1, keepdims=True)),
-                              output_shape=(self.actionSize,))([value, advantage])
+            # Combine value and advantage
+            # Q(s,a) = V(s) + (A(s,a) - mean(A(s)))
+            q_values = Lambda(
+                lambda a: a[0] + (a[1] - tf.math.reduce_mean(a[1], axis=1, keepdims=True)),
+                output_shape=(self.actionSize,)
+            )([value, advantage])
             
+            # Create model
             model = Model(inputs=input_layer, outputs=q_values)
-            optimizer = Adam(learning_rate=0.00015, clipnorm=1.0)
+            
+            # Optimizer with gradient clipping
+            optimizer = Adam(learning_rate=self.learningRate, clipnorm=1.0)
+            
+            # Compile with Huber loss for robustness
             model.compile(loss=_huber_loss, optimizer=optimizer)
+            
+            # Log parameter count
             params = sum([np.prod(w.shape) for w in model.trainable_weights])
-            logger.info(f"Initialized DQN model with residual connections (~{params:,} parameters)")
-        return model
-
-    def prepareMemoryForTraining(self, memory):
-        experiences = memory.get_all()
-        if not experiences:
-            return []
-        
-        data_with_priority = []
-        for step in experiences:
-            state = self.prepareNetworkInputs(step[Agent.STATE_INDEX])
-            action = step[Agent.ACTION_INDEX]
-            reward = step[Agent.REWARD_INDEX]
-            done = step[Agent.DONE_INDEX]
-            next_state = self.prepareNetworkInputs(step[Agent.NEXT_STATE_INDEX])
-            priority = abs(reward) + 0.01
+            logger.info(f"Initialized Dueling DQN with residual connections (~{params:,} parameters)")
             
-            if step[Agent.NEXT_STATE_INDEX].get('enemy_health', 100) <= 0:
-                priority *= 8.0
-            steps_survived = step[Agent.NEXT_STATE_INDEX].get('match_duration', 0) - step[Agent.STATE_INDEX].get('match_duration', 0)
-            priority += steps_survived * 0.01
-            
-            data_with_priority.append([state, action, reward, done, next_state, priority])
-        
-        data_with_priority.sort(key=lambda x: x[5], reverse=True)
-        total_size = len(data_with_priority)
-        high_priority_size = int(0.5 * total_size)
-        recent_size = int(0.3 * total_size)
-        random_size = total_size - high_priority_size - recent_size
-        
-        high_priority = data_with_priority[:high_priority_size]
-        recent = data_with_priority[-recent_size:] if recent_size > 0 else []
-        remaining = data_with_priority[high_priority_size:-recent_size] if recent_size > 0 else data_with_priority[high_priority_size:]
-        random_sample = random.sample(remaining, min(random_size, len(remaining))) if remaining and random_size > 0 else []
-        
-        return high_priority + recent + random_sample
+            return model
 
+# Example usage
+if __name__ == "__main__":
+    agent = DeepQAgent(stateSize=32, resume=True)
+    logger.info(f"Agent initialized with epsilon {agent.epsilon}")
     
-    def trainNetwork(self, data, model):
-        """Train the DQN model using the provided experience data.
+    # Simulate some episodes
+    for episode in range(10):
+        agent.prepareForNextFight()
         
-        Args:
-            data: List of experience tuples from replay buffer
-            model: The Q-network model to train
+        # Simulate steps (in real usage, this would come from the environment)
+        for step in range(100):
+            # Mock game state
+            state = {
+                "health": 100 - step // 2,
+                "enemy_health": 100 - step,
+                "x_position": 100 + step,
+                "y_position": 50,
+                "enemy_x_position": 200 - step // 2,
+                "enemy_y_position": 50,
+                "status": 512,
+                "enemy_status": 514,
+                "combo_count": step // 20,
+            }
             
-        Returns:
-            The trained model
-        """
-        if len(data) == 0:
-            logger.warning("No data available for training. Skipping.")
-            return model
+            # Get action from agent
+            move, inputs = agent.getMove(None, state)
+            
+            # Mock next state
+            next_state = {
+                "health": max(0, state["health"] - (1 if random.random() < 0.3 else 0)),
+                "enemy_health": max(0, state["enemy_health"] - (5 if random.random() < 0.4 else 0)),
+                "x_position": state["x_position"] + random.randint(-10, 10),
+                "y_position": state["y_position"] + random.randint(-5, 5),
+                "enemy_x_position": state["enemy_x_position"] + random.randint(-10, 10),
+                "enemy_y_position": state["enemy_y_position"] + random.randint(-5, 5),
+                "status": state["status"],
+                "enemy_status": state["enemy_status"],
+                "combo_count": state["combo_count"] + (1 if random.random() < 0.1 else 0),
+                "match_duration": step,
+            }
+            
+            # Mock reward
+            reward = 1.0 if next_state["enemy_health"] < state["enemy_health"] else -0.5
+            done = next_state["health"] <= 0 or next_state["enemy_health"] <= 0
+            
+            # Record step
+            agent.recordStep([None, state, move, reward, None, next_state, done])
+            
+            if done:
+                break
         
-        # Ensure we have valid data before sampling
-        batch_size = min(64, len(data))
-        if batch_size == 0:
-            return model
-        
-        # Sample a mini-batch from the data
-        indices = random.sample(range(len(data)), batch_size)
-        minibatch = [data[i] for i in indices]
-        
-        # Determine the compute device (GPU if available, otherwise CPU)
-        device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
-        
-        with tf.device(device):
-            try:
-                # Prepare the states tensor for batch processing
-                states = []
-                actions = []
-                rewards = []
-                dones = []
-                next_states = []
-                
-                # Extract the components from the minibatch
-                for step in minibatch:
-                    if len(step) < 5:
-                        logger.warning(f"Skipping invalid step data with length {len(step)}")
-                        continue
-                    
-                    state = step[0]  # State tensor
-                    if not isinstance(state, np.ndarray) or state.ndim != 2:
-                        logger.warning(f"Skipping invalid state shape: {type(state)}")
-                        continue
-                    
-                    action = step[1]  # Action index
-                    if action >= self.actionSize:
-                        action = action % self.actionSize
-                    
-                    reward = step[2]  # Reward value
-                    done = step[3]    # Done flag
-                    next_state = step[4]  # Next state tensor
-                    
-                    if not isinstance(next_state, np.ndarray) or next_state.ndim != 2:
-                        logger.warning(f"Skipping invalid next_state shape: {type(next_state)}")
-                        continue
-                    
-                    states.append(state[0])
-                    actions.append(action)
-                    rewards.append(reward)
-                    dones.append(float(done))
-                    next_states.append(next_state[0])
-                
-                if not states:
-                    logger.warning("No valid states found for training. Skipping.")
-                    return model
-                
-                # Convert lists to tensors
-                states = tf.convert_to_tensor(states, dtype=tf.float32)
-                actions = tf.convert_to_tensor(actions, dtype=tf.int32)
-                rewards = tf.convert_to_tensor(rewards, dtype=tf.float32)
-                dones = tf.convert_to_tensor(dones, dtype=tf.float32)
-                next_states = tf.convert_to_tensor(next_states, dtype=tf.float32)
-                
-                # DOUBLE DQN:
-                # 1. Use online network to select actions
-                # 2. Use target network to evaluate those actions
-                
-                # Get next action selections using the online model
-                next_action_values = model(next_states, training=False)
-                next_actions = tf.argmax(next_action_values, axis=1, output_type=tf.int32)
-                
-                # Get Q-values for those actions using the target model
-                next_q_values = self.target_model(next_states, training=False)
-                
-                # Gather the Q-values for the selected actions
-                next_q_values_for_actions = tf.gather_nd(
-                    next_q_values,
-                    tf.stack([tf.range(tf.shape(next_actions)[0], dtype=tf.int32), next_actions], axis=1)
-                )
-                
-                # Calculate target Q values
-                target_q_values = rewards + (1.0 - dones) * self.gamma * next_q_values_for_actions
-                
-                # Use gradient tape for automatic differentiation
-                with tf.GradientTape() as tape:
-                    # Get current Q-value predictions
-                    q_values = model(states, training=True)
-                    
-                    # Gather Q-values for the actions that were taken
-                    q_values_for_actions = tf.gather_nd(
-                        q_values,
-                        tf.stack([tf.range(tf.shape(actions)[0], dtype=tf.int32), actions], axis=1)
-                    )
-                    
-                    # Calculate loss (using Huber loss for stability)
-                    loss = tf.reduce_mean(_huber_loss(target_q_values, q_values_for_actions))
-                
-                # Compute gradients
-                gradients = tape.gradient(loss, model.trainable_variables)
-                
-                # Clip gradients to prevent exploding gradients
-                gradients = [tf.clip_by_norm(g, 1.0) for g in gradients]
-                
-                # Apply gradients
-                model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-                
-                # Update loss history
-                if hasattr(self, 'lossHistory'):
-                    self.lossHistory.on_epoch_end(0, {'loss': float(loss)})
-                    
-            except Exception as e:
-                logger.error(f"Error in trainNetwork: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-        
-        return model
+        # Learn from episode
+        agent.reviewFight()
+        logger.info(f"Episode {episode+1} completed. Epsilon: {agent.epsilon:.4f}")
+    
+    # Save final model and stats
+    agent.saveModel()
+    agent.saveStats()
+    agent.printFinalStats()
