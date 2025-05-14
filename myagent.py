@@ -55,7 +55,6 @@ def _huber_loss(y_true, y_pred, clip_delta=1.0):
 from keras.utils import get_custom_objects
 get_custom_objects().update({"_huber_loss": _huber_loss})
 
-
 class CircularBuffer:
     """A circular buffer implementation for storing experiences efficiently."""
     
@@ -89,7 +88,6 @@ class CircularBuffer:
     
     def get_all(self):
         """Return all valid entries in the buffer"""
-        # FIX: Create shallow copies of elements to avoid reference issues
         return [item.copy() if isinstance(item, list) else item for item in self.buffer[:self.size] if item is not None]
     
     def __len__(self):
@@ -98,7 +96,6 @@ class CircularBuffer:
 class DeepQAgent:
     """Deep Q-Learning agent with Double DQN and Dueling architecture"""
     
-    # Class variables from Agent
     OBSERVATION_INDEX = 0
     STATE_INDEX = 1
     ACTION_INDEX = 2
@@ -109,7 +106,6 @@ class DeepQAgent:
     PRIORITY_INDEX = 7
     MAX_DATA_LENGTH = 200000
 
-    # Class variables from DeepQAgent
     EPSILON_MIN = 0.05
     DEFAULT_DISCOUNT_RATE = 0.98
     DEFAULT_LEARNING_RATE = 0.0001
@@ -120,12 +116,12 @@ class DeepQAgent:
     doneKeys = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
     ACTION_BUTTONS = ["X", "Y", "Z", "A", "B", "C"]
 
-    def __init__(self, stateSize=32, resume=False, name=None, moveList=Moves):
+    def __init__(self, stateSize=35, resume=False, name=None, moveList=Moves):
         """
         Initialize the DeepQAgent
         
         Args:
-            stateSize: Size of the state vector
+            stateSize: Size of the state vector (increased to 35 for matches_won, enemy_matches_won, score)
             resume: Whether to resume training from saved model
             name: Name of the agent
             moveList: List of available moves
@@ -156,22 +152,21 @@ class DeepQAgent:
         self.training_start_time = time.time()
         self.avg_reward_history = []
         self.avg_loss_history = []
-
+        self.episode_outcomes = []  # Track win/loss outcomes
+        
         self.lr_step_size = 50000
         self.last_lr_update = 0
         self.lr_decay = 0.995
         
-        # DeepQAgent-specific attributes
         self.stateSize = stateSize
         self.actionSize = len(moveList) if hasattr(moveList, '__len__') else 20
         self.gamma = DeepQAgent.DEFAULT_DISCOUNT_RATE
         self.learningRate = DeepQAgent.DEFAULT_LEARNING_RATE
         self.lossHistory = LossHistory()
         self.episode_count = 0
-        self.update_target_every = 6  # Update target network every 6 episodes
-        self._last_logged_epsilon = None  # For tracking epsilon changes
+        self.update_target_every = 6
+        self._last_logged_epsilon = None
         
-        # Initialize network (no longer conditional on class name)
         self.model = self.initializeNetwork()
         if resume:
             self.loadModel()
@@ -180,11 +175,9 @@ class DeepQAgent:
         else:
             logger.info(f"Starting fresh training for {self.name}")
         
-        # Create target network
         self.target_model = self.initializeNetwork()
         self.target_model.set_weights(self.model.get_weights())
         
-        # Set initial epsilon
         if resume and hasattr(self, "total_timesteps"):
             self.calculateEpsilonFromTimesteps()
             logger.info(f"Resuming with epsilon: {self.epsilon}")
@@ -218,7 +211,6 @@ class DeepQAgent:
         if "enemy_x_position" not in info:
             info["enemy_x_position"] = 200
             
-        # Return correct directional input based on relative positions
         if info["x_position"] < info["enemy_x_position"]:
             return (frameInputs[0] if isinstance(frameInputs, list) and len(frameInputs) > 0 else frameInputs)
         else:
@@ -233,65 +225,57 @@ class DeepQAgent:
         """
         modified_step = list(step)
         
-        # Extract state information
         current_state = step[DeepQAgent.STATE_INDEX]
         next_state = step[DeepQAgent.NEXT_STATE_INDEX]
         reward = step[DeepQAgent.REWARD_INDEX]
         
-        # Health metrics - FIX: Add proper None checks and default values
         current_player_health = current_state.get("health", 100) if current_state else 100
         current_enemy_health = current_state.get("enemy_health", 100) if current_state else 100
         next_player_health = next_state.get("health", 100) if next_state else 100
         next_enemy_health = next_state.get("enemy_health", 100) if next_state else 100
         
-        # Calculate damages - FIX: Ensure we don't get negative values
         damage_dealt = max(0, current_enemy_health - next_enemy_health)
         damage_taken = max(0, current_player_health - next_player_health)
         
-        # Position information - FIX: Add proper None checks and default values
         player_x = current_state.get("x_position", 0) if current_state else 0
         enemy_x = current_state.get("enemy_x_position", 0) if current_state else 0
         distance = abs(player_x - enemy_x)
         
-        # Combo counter - FIX: Add proper None check
         combo_count = current_state.get("combo_count", 0) if current_state else 0
         
-        # Damage rewards
         damage_reward = damage_dealt * 0.2
         damage_penalty = damage_taken * -0.2
-        modified_reward = reward + damage_reward + damage_penalty
         
-        # Victory and defeat rewards
+        # Score-based reward
+        current_score = current_state.get('score', 0) if current_state else 0
+        next_score = next_state.get('score', 0) if next_state else 0
+        score_increase = max(0, next_score - current_score)
+        
+        modified_reward = reward + damage_reward + damage_penalty + (score_increase * 0.01)
+        
         if next_enemy_health <= 0:
-            modified_reward += 150 + (next_player_health / 100 * 50)  # More health = better victory
+            modified_reward += 150 + (next_player_health / 100 * 50)
         elif next_player_health <= 0:
             modified_reward -= 75
         
-        # Combo bonus
         combo_bonus = combo_count * 3
         modified_reward += combo_bonus
         
-        # Positional advantage reward
         if distance < 50:
-            modified_reward += 0.1 * (50 - distance)  # Closer = better when in range
+            modified_reward += 0.1 * (50 - distance)
         
-        # Update reward
         modified_step[DeepQAgent.REWARD_INDEX] = modified_reward
         
-        # Calculate experience priority
         priority = abs(modified_reward) + 0.01
         if next_enemy_health <= 0:
-            priority *= 8.0  # Highly prioritize winning experiences
+            priority *= 8.0
         if damage_dealt > 10:
-            priority *= 2.0  # Prioritize effective attacks
+            priority *= 2.0
         
-        # Save to memory
         modified_step_with_priority = modified_step + [priority]
         self.memory.append(modified_step_with_priority)
         self.total_timesteps += 1
         self.episode_rewards.append(modified_reward)
-
-
 
     def updateEpisodeMetrics(self):
         """Update metrics at the end of an episode"""
@@ -306,33 +290,49 @@ class DeepQAgent:
         Review and learn from the previous fight (episode)
         Updates the target network, trains the model, and updates metrics
         """
-        # Increment episode counter
         self.episode_count += 1
         
-        # Update target network periodically
+        # Determine outcome using matches_won and enemy_matches_won
+        if self.memory.size > 0:
+            experiences = self.memory.get_all()
+            last_experience = experiences[-1]
+            current_state = last_experience[DeepQAgent.STATE_INDEX]
+            next_state = last_experience[DeepQAgent.NEXT_STATE_INDEX]
+            
+            current_matches_won = current_state.get('matches_won', 0) if current_state else 0
+            next_matches_won = next_state.get('matches_won', 0) if next_state else 0
+            current_enemy_matches_won = current_state.get('enemy_matches_won', 0) if current_state else 0
+            next_enemy_matches_won = next_state.get('enemy_matches_won', 0) if next_state else 0
+            
+            if next_matches_won > current_matches_won:
+                self.episode_outcome = 1  # Win
+            elif next_enemy_matches_won > current_enemy_matches_won:
+                self.episode_outcome = 0  # Loss
+            else:
+                self.episode_outcome = 0  # Draw or no change
+        else:
+            self.episode_outcome = 0
+        
+        self.episode_outcomes.append(self.episode_outcome)
+        
         if self.episode_count % self.update_target_every == 0:
             if hasattr(self, "target_model"):
                 self.target_model.set_weights(self.model.get_weights())
                 logger.info(f"Target network updated at episode {self.episode_count}")
         
-        # Train the network using recorded experiences
         try:
             training_data = self.prepareMemoryForTraining(self.memory)
             if len(training_data) > 0:
-                # FIX: Store the original learning rate
                 original_lr = self.model.optimizer.learning_rate.numpy()
-                # Temporarily reduce learning rate for stability
                 temp_lr = original_lr * 0.5
                 self.model.optimizer.learning_rate.assign(temp_lr)
                 self.model = self.trainNetwork(training_data, self.model)
-                # FIX: Restore the exact original learning rate, not double
                 self.model.optimizer.learning_rate.assign(original_lr)
         except Exception as e:
             logger.error(f"Error training network: {e}")
             import traceback
             logger.error(traceback.format_exc())
         
-        # Update episode metrics
         try:
             self.updateEpisodeMetrics()
             if hasattr(self, "lossHistory") and hasattr(self.lossHistory, "losses") and len(self.lossHistory.losses) > 0:
@@ -341,14 +341,12 @@ class DeepQAgent:
         except Exception as e:
             logger.error(f"Error updating metrics: {e}")
         
-        # Update exploration rate
         if hasattr(self, "updateEpsilon"):
             try:
                 self.updateEpsilon()
             except Exception as e:
                 logger.error(f"Error updating epsilon: {e}")
         
-        # Apply learning rate decay
         try:
             current_time = self.total_timesteps
             if current_time - self.last_lr_update >= self.lr_step_size:
@@ -360,14 +358,12 @@ class DeepQAgent:
         except Exception as e:
             logger.error(f"Error applying learning rate decay: {e}")
         
-        # Save model and stats
         try:
             self.saveModel()
             self.saveStats()
             self.printTrainingProgress()
         except Exception as e:
             logger.error(f"Error saving or printing: {e}")
-
 
     def loadModel(self):
         """Load model weights from file if available"""
@@ -376,7 +372,6 @@ class DeepQAgent:
         model_path = os.path.join(models_dir, f"{self.getModelName()}")
         load_successful = False
         
-        # Try different file extensions
         for ext in [".weights.h5", ".h5", ".keras"]:
             full_path = model_path + ext
             if os.path.exists(full_path):
@@ -388,7 +383,6 @@ class DeepQAgent:
                 except Exception as e:
                     logger.error(f"Error loading model from {full_path}: {e}")
         
-        # Update target network if available
         if load_successful and hasattr(self, "target_model"):
             self.target_model.set_weights(self.model.get_weights())
             logger.info("Target network synchronized")
@@ -413,7 +407,6 @@ class DeepQAgent:
         stats_path = os.path.join(stats_dir, f"{self.name}_stats.json")
         memory_path = os.path.join(stats_dir, f"{self.name}_memory.pkl")
         
-        # Collect stats
         stats = {
             "total_timesteps": self.total_timesteps,
             "episodes_completed": self.episodes_completed,
@@ -421,9 +414,9 @@ class DeepQAgent:
             "avg_loss_history": self.avg_loss_history,
             "last_lr_update": getattr(self, "last_lr_update", 0),
             "episode_count": getattr(self, "episode_count", 0),
+            "episode_outcomes": self.episode_outcomes,
         }
         
-        # Save stats and memory
         try:
             with open(stats_path, "w") as file:
                 json.dump(stats, file, indent=4)
@@ -440,7 +433,6 @@ class DeepQAgent:
         stats_path = os.path.join(stats_dir, f"{self.name}_stats.json")
         memory_path = os.path.join(stats_dir, f"{self.name}_memory.pkl")
         
-        # Load stats if available
         if os.path.exists(stats_path):
             try:
                 with open(stats_path, "r") as file:
@@ -450,16 +442,14 @@ class DeepQAgent:
                     self.avg_reward_history = stats.get("avg_reward_history", [])
                     self.avg_loss_history = stats.get("avg_loss_history", [])
                     self.last_lr_update = stats.get("last_lr_update", 0)
-                    if hasattr(self, "episode_count"):
-                        self.episode_count = stats.get("episode_count", 0)
-                    # Update epsilon if method exists
+                    self.episode_count = stats.get("episode_count", 0)
+                    self.episode_outcomes = stats.get("episode_outcomes", [])
                     if hasattr(self, "calculateEpsilonFromTimesteps"):
                         self.calculateEpsilonFromTimesteps()
                     logger.info(f"✓ Loaded stats from {stats_path}")
             except Exception as e:
                 logger.error(f"Error loading stats: {e}")
         
-        # Load memory if available
         if os.path.exists(memory_path):
             try:
                 with open(memory_path, "rb") as file:
@@ -483,6 +473,9 @@ class DeepQAgent:
         if hasattr(self, "lossHistory") and hasattr(self.lossHistory, "losses") and len(self.lossHistory.losses) > 0:
             recent_loss = sum(self.lossHistory.losses) / len(self.lossHistory.losses)
             logger.info(f"Recent loss: {recent_loss:.6f}")
+        if self.episode_outcomes:
+            win_rate = sum(self.episode_outcomes[-20:]) / min(len(self.episode_outcomes), 20)
+            logger.info(f"Recent win rate: {win_rate:.4f}")
         logger.info("===========================\n")
 
     def printFinalStats(self):
@@ -496,6 +489,9 @@ class DeepQAgent:
             logger.info(f"Final average reward: {self.avg_reward_history[-1]:.4f}")
         if self.avg_loss_history:
             logger.info(f"Final average loss: {self.avg_loss_history[-1]:.6f}")
+        if self.episode_outcomes:
+            win_rate = sum(self.episode_outcomes) / len(self.episode_outcomes)
+            logger.info(f"Overall win rate: {win_rate:.4f}")
         logger.info("=================================\n")
 
     def getModelName(self):
@@ -518,48 +514,38 @@ class DeepQAgent:
             move: Selected move index
             frameInputs: Frame inputs for the selected move
         """
-        # Explore: choose random action
+        for field in ["matches_won", "enemy_matches_won", "score"]:
+            if field not in info:
+                info[field] = 0
+                logger.warning(f"{field} not found in info, defaulting to 0")
+        
         if np.random.rand() <= self.epsilon:
             move, frameInputs = self.getRandomMove(info)
             return move, frameInputs
         
-        # Exploit: choose best action based on Q-values
         else:
             try:
-                # Prepare state input
                 state_data = self.prepareNetworkInputs(info)
                 
-                # Choose device based on availability
                 device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
                 
-                # FIX: Use TensorFlow's memory management features
                 with tf.device(device):
-                    # Use a separate graph for prediction to avoid memory leaks
                     with tf.Graph().as_default():
-                        # Get model predictions using TensorFlow's Session
-                        # Make sure we don't keep the whole computation graph in memory
                         tf.keras.backend.clear_session()
-                        
-                        # Get model predictions
                         q_values = self.model.predict(state_data, verbose=0)
                         
-                        # Handle shape issues consistently
                         if q_values.ndim == 1:
                             q_values = np.reshape(q_values, (1, -1))
                         
-                        # Validate prediction shape
                         if q_values.shape[1] != self.actionSize:
                             logger.warning(f"Model output shape mismatch: expected {self.actionSize}, got {q_values.shape[1]}")
                             return self.getRandomMove(info)
                         
-                        # Get best action
                         move = np.argmax(q_values[0])
                         
-                        # Handle potential index out of range
                         if move >= len(self.moveList):
                             move = move % len(self.moveList)
                         
-                        # Convert move to frame inputs
                         move_enum = list(self.moveList)[move]
                         frameInputs = self.convertMoveToFrameInputs(move_enum, info)
                         
@@ -576,58 +562,32 @@ class DeepQAgent:
         Returns:
             Compiled Keras model
         """
-        # Choose appropriate device
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
         
         with tf.device(device):
-            # Input layer
             input_layer = Input(shape=(self.stateSize,))
-            
-            # Normalize inputs
             x = BatchNormalization()(input_layer)
-            
-            # First dense layer
             x = Dense(256, activation='relu')(x)
             x = Dropout(0.3)(x)
-            
-            # Store for residual connection
             residual = x
-            
-            # Residual block
             x = Dense(256, activation='linear')(x)
-            x = Add()([residual, x])  # Add residual connection
+            x = Add()([residual, x])
             x = Activation('relu')(x)
             x = BatchNormalization()(x)
-            
-            # Feature extraction layer
             x = Dense(64, activation='relu')(x)
-            
-            # Dueling DQN architecture:
-            # 1. Value stream - estimates state value
             value_stream = Dense(32, activation='relu')(x)
             value = Dense(1)(value_stream)
-            
-            # 2. Advantage stream - estimates advantage of each action
             advantage_stream = Dense(32, activation='relu')(x)
             advantage = Dense(self.actionSize)(advantage_stream)
-            
-            # Combine value and advantage
-            # Q(s,a) = V(s) + (A(s,a) - mean(A(s)))
             q_values = Lambda(
                 lambda a: a[0] + (a[1] - tf.math.reduce_mean(a[1], axis=1, keepdims=True)),
                 output_shape=(self.actionSize,)
             )([value, advantage])
             
-            # Create model
             model = Model(inputs=input_layer, outputs=q_values)
-            
-            # Optimizer with gradient clipping
             optimizer = Adam(learning_rate=self.learningRate, clipnorm=1.0)
-            
-            # Compile with Huber loss for robustness
             model.compile(loss=_huber_loss, optimizer=optimizer)
             
-            # Log parameter count
             params = sum([np.prod(w.shape) for w in model.trainable_weights])
             logger.info(f"Initialized Dueling DQN with residual connections (~{params:,} parameters)")
             
@@ -647,7 +607,6 @@ class DeepQAgent:
         if not experiences:
             return []
         
-        # Calculate priorities based on clear criteria
         data_with_priority = []
         for step in experiences:
             state = step[DeepQAgent.STATE_INDEX]
@@ -656,14 +615,9 @@ class DeepQAgent:
             reward = step[DeepQAgent.REWARD_INDEX]
             done = step[DeepQAgent.DONE_INDEX]
             
-            # Base priority on reward magnitude
-            priority = abs(reward) + 0.01  # Small constant to ensure non-zero priority
-            
-            # Prioritize terminal states where agent wins
+            priority = abs(reward) + 0.01
             if next_state.get('enemy_health', 100) <= 0:
                 priority *= 5.0
-            
-            # Prioritize states where agent dealt significant damage
             damage_dealt = max(0, state.get('enemy_health', 100) - next_state.get('enemy_health', 100))
             if damage_dealt > 10:
                 priority *= 2.0
@@ -673,20 +627,14 @@ class DeepQAgent:
             
             data_with_priority.append([processed_state, action, reward, done, processed_next_state, priority])
         
-        # Balance between high priority and exploration with fixed ratios
         data_with_priority.sort(key=lambda x: x[5], reverse=True)
         total_size = len(data_with_priority)
-        
-        # Get top 70% high priority experiences
         high_priority_count = int(0.7 * total_size)
         high_priority = data_with_priority[:high_priority_count]
-        
-        # Get 30% random experiences for exploration
         remaining = data_with_priority[high_priority_count:]
         random_count = min(int(0.3 * total_size), len(remaining))
         random_experiences = random.sample(remaining, random_count) if random_count > 0 and remaining else []
         
-        # Combine and return
         return high_priority + random_experiences
 
     def prepareNetworkInputs(self, step):
@@ -699,86 +647,60 @@ class DeepQAgent:
         Returns:
             Numpy array with processed features
         """
-        # FIX: Check if step is None to avoid errors
         if step is None:
-            # Return a zero vector of the correct shape if step is None
-            feature_vector = np.zeros((1, self.stateSize), dtype=np.float32)
-            return feature_vector
+            return np.zeros((1, self.stateSize), dtype=np.float32)
             
         feature_vector = []
         
-        # Health features
         player_health = step.get("health", 100)
         enemy_health = step.get("enemy_health", 100)
-        feature_vector.append(player_health)
-        feature_vector.append(enemy_health)
-        
-        # Health percentages and advantage
         player_health_pct = player_health / 100.0
         enemy_health_pct = enemy_health / 100.0
         health_advantage = player_health_pct - enemy_health_pct
-        feature_vector.append(player_health_pct)
-        feature_vector.append(enemy_health_pct)
-        feature_vector.append(health_advantage)
+        feature_vector.extend([player_health, enemy_health, player_health_pct, enemy_health_pct, health_advantage])
         
-        # Position features
         player_x = step.get("x_position", 0)
         player_y = step.get("y_position", 0)
         enemy_x = step.get("enemy_x_position", 0)
         enemy_y = step.get("enemy_y_position", 0)
-        feature_vector.append(player_x)
-        feature_vector.append(player_y)
-        feature_vector.append(enemy_x)
-        feature_vector.append(enemy_y)
-        
-        # Distance features
         x_distance = abs(player_x - enemy_x)
         y_distance = abs(player_y - enemy_y)
         euclidean_distance = np.sqrt(x_distance**2 + y_distance**2)
-        feature_vector.append(x_distance)
-        feature_vector.append(y_distance)
-        feature_vector.append(euclidean_distance)
+        feature_vector.extend([player_x, player_y, enemy_x, enemy_y, x_distance, y_distance, euclidean_distance])
         
-        # Directional features
         facing_right = 1 if player_x < enemy_x else 0
-        feature_vector.append(facing_right)
         enemy_above = 1 if player_y > enemy_y else 0
-        feature_vector.append(enemy_above)
+        feature_vector.extend([facing_right, enemy_above])
         
-        # Character state features (one-hot encoded)
+        matches_won = step.get("matches_won", 0)
+        enemy_matches_won = step.get("enemy_matches_won", 0)
+        score = step.get("score", 0.0)
+        feature_vector.extend([matches_won, enemy_matches_won, score / 1000.0])
+        
         enemy_status = step.get("enemy_status", 512)
         player_status = step.get("status", 512)
-        
-        # Enemy state one-hot encoding
         oneHotEnemyState = [0] * len(DeepQAgent.stateIndices.keys())
         state_index = DeepQAgent.stateIndices.get(enemy_status, 0)
         oneHotEnemyState[state_index] = 1
         feature_vector.extend(oneHotEnemyState)
         
-        # Enemy character one-hot encoding
         oneHotEnemyChar = [0] * 8
         enemy_char = step.get("enemy_character", 0)
         if enemy_char < len(oneHotEnemyChar):
             oneHotEnemyChar[enemy_char] = 1
         feature_vector.extend(oneHotEnemyChar)
         
-        # Player state one-hot encoding
         oneHotPlayerState = [0] * len(DeepQAgent.stateIndices.keys())
         state_index = DeepQAgent.stateIndices.get(player_status, 0)
         oneHotPlayerState[state_index] = 1
         feature_vector.extend(oneHotPlayerState)
         
-        # Ensure vector matches expected state size
-        if hasattr(self, "stateSize"):
-            if len(feature_vector) < self.stateSize:
-                feature_vector.extend([0] * (self.stateSize - len(feature_vector)))
-            elif len(feature_vector) > self.stateSize:
-                feature_vector = feature_vector[:self.stateSize]
+        if len(feature_vector) < self.stateSize:
+            feature_vector.extend([0] * (self.stateSize - len(feature_vector)))
+        elif len(feature_vector) > self.stateSize:
+            feature_vector = feature_vector[:self.stateSize]
         
-        # Reshape for network input (batch size of 1)
-        feature_vector = np.array(feature_vector, dtype=np.float32)
-        feature_vector = np.reshape(feature_vector, [1, -1])
-        return feature_vector
+        return np.array(feature_vector, dtype=np.float32).reshape(1, -1)
 
     def trainNetwork(self, data, model):
         """
@@ -795,25 +717,20 @@ class DeepQAgent:
             logger.warning("No data available for training. Skipping.")
             return model
         
-        # Create minibatch
         batch_size = min(64, len(data))
         if batch_size == 0:
             return model
         
-        # Sample from experience replay
         indices = random.sample(range(len(data)), batch_size)
         minibatch = [data[i] for i in indices]
         
-        # Use appropriate device
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
         
         with tf.device(device):
             try:
-                # Initialize arrays
                 states_list = []
                 targets_list = []
                 
-                # Process each experience
                 for experience in minibatch:
                     if len(experience) < 5:
                         continue
@@ -824,27 +741,19 @@ class DeepQAgent:
                     done = experience[3]
                     next_state = experience[4]
                     
-                    # Ensure action is in valid range
                     if action >= self.actionSize:
                         action = action % self.actionSize
                     
-                    # Get current Q values
                     current_q = model.predict(state, verbose=0)
                     
-                    # Calculate target Q value
                     if done:
-                        # FIX: For terminal states, use only the immediate reward
                         target = reward
                     else:
-                        # Double DQN: Use online network to select action, target network to evaluate
                         next_action = np.argmax(model.predict(next_state, verbose=0)[0])
                         next_q = self.target_model.predict(next_state, verbose=0)[0][next_action]
                         target = reward + self.gamma * next_q
                     
-                    # Update the Q value for the chosen action
                     current_q[0][action] = target
-                    
-                    # Add to batch
                     states_list.append(state[0])
                     targets_list.append(current_q[0])
                 
@@ -852,11 +761,9 @@ class DeepQAgent:
                     logger.warning("No valid experiences in batch. Skipping training.")
                     return model
                 
-                # Convert lists to numpy arrays
                 states_array = np.array(states_list)
                 targets_array = np.array(targets_list)
                 
-                # Train model
                 history = model.fit(
                     states_array, 
                     targets_array,
@@ -865,7 +772,6 @@ class DeepQAgent:
                     verbose=0
                 )
                 
-                # Update loss history
                 if hasattr(self, 'lossHistory') and 'loss' in history.history:
                     loss_value = history.history['loss'][0]
                     self.lossHistory.on_epoch_end(0, {'loss': float(loss_value)})
@@ -877,7 +783,6 @@ class DeepQAgent:
                 
         return model
 
-
     def calculateEpsilonFromTimesteps(self):
         """
         Calculate epsilon value based on timesteps with consistent decay schedule
@@ -885,22 +790,15 @@ class DeepQAgent:
         START_EPSILON = 1.0
         TIMESTEPS_TO_MIN_EPSILON = 1500000
         
-        # FIX: Use a single, consistent decay approach
-        # Linear decay from START_EPSILON to EPSILON_MIN over TIMESTEPS_TO_MIN_EPSILON steps
         decay_per_step = (START_EPSILON - DeepQAgent.EPSILON_MIN) / TIMESTEPS_TO_MIN_EPSILON
         self.epsilon = max(DeepQAgent.EPSILON_MIN, START_EPSILON - (decay_per_step * self.total_timesteps))
         
-        # Boost epsilon if performance is poor - keep this logic
         if self.episodes_completed > 20:
-            # Calculate approximate win rate from recent episodes
-            win_rate = sum(1 for r in self.avg_reward_history[-20:] if r > 50) / min(len(self.avg_reward_history), 20) if self.avg_reward_history else 0
+            win_rate = sum(self.episode_outcomes[-20:]) / min(len(self.episode_outcomes), 20) if self.episode_outcomes else 0
             if win_rate < 0.15:
                 self.epsilon = min(0.8, self.epsilon + 0.15)
                 logger.info(f"Performance boost: epsilon increased to {self.epsilon} due to low win rate")
         
-        # FIX: Remove the additional epsilon *= 0.995 decay that was causing inconsistency
-        
-        # Log significant changes
         if hasattr(self, '_last_logged_epsilon') and self._last_logged_epsilon is not None:
             if abs(self._last_logged_epsilon - self.epsilon) > 0.05:
                 logger.info(f"Epsilon updated: {self._last_logged_epsilon:.4f} -> {self.epsilon:.4f}")
@@ -908,23 +806,18 @@ class DeepQAgent:
         else:
             self._last_logged_epsilon = self.epsilon
 
-
     def updateEpsilon(self):
         """Update epsilon based on current timesteps"""
         self.calculateEpsilonFromTimesteps()
 
-# Example usage
 if __name__ == "__main__":
-    agent = DeepQAgent(stateSize=32, resume=True)
+    agent = DeepQAgent(stateSize=35, resume=True)
     logger.info(f"Agent initialized with epsilon {agent.epsilon}")
     
-    # Simulate some episodes
     for episode in range(10):
         agent.prepareForNextFight()
         
-        # Simulate steps (in real usage, this would come from the environment)
         for step in range(100):
-            # Mock game state
             state = {
                 "health": 100 - step // 2,
                 "enemy_health": 100 - step,
@@ -935,12 +828,13 @@ if __name__ == "__main__":
                 "status": 512,
                 "enemy_status": 514,
                 "combo_count": step // 20,
+                "matches_won": episode // 2,
+                "enemy_matches_won": episode // 3,
+                "score": 1000 + step * 10,
             }
             
-            # Get action from agent
             move, inputs = agent.getMove(None, state)
             
-            # Mock next state
             next_state = {
                 "health": max(0, state["health"] - (1 if random.random() < 0.3 else 0)),
                 "enemy_health": max(0, state["enemy_health"] - (5 if random.random() < 0.4 else 0)),
@@ -951,24 +845,23 @@ if __name__ == "__main__":
                 "status": state["status"],
                 "enemy_status": state["enemy_status"],
                 "combo_count": state["combo_count"] + (1 if random.random() < 0.1 else 0),
+                "matches_won": state["matches_won"] + (1 if random.random() < 0.2 else 0),
+                "enemy_matches_won": state["enemy_matches_won"] + (1 if random.random() < 0.15 else 0),
+                "score": state["score"] + random.randint(0, 50),
                 "match_duration": step,
             }
             
-            # Mock reward
             reward = 1.0 if next_state["enemy_health"] < state["enemy_health"] else -0.5
-            done = next_state["health"] <= 0 or next_state["enemy_health"] <= 0
+            done = next_state["health"] <= 0 or next_state["enemy_health"] <= 0 or next_state["matches_won"] > state["matches_won"] or next_state["enemy_matches_won"] > state["enemy_matches_won"]
             
-            # Record step
             agent.recordStep([None, state, move, reward, None, next_state, done])
             
             if done:
                 break
         
-        # Learn from episode
         agent.reviewFight()
         logger.info(f"Episode {episode+1} completed. Epsilon: {agent.epsilon:.4f}")
     
-    # Save final model and stats
     agent.saveModel()
     agent.saveStats()
     agent.printFinalStats()
