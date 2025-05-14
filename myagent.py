@@ -232,9 +232,12 @@ class Agent:
             self.episode_rewards = []
 
     def reviewFight(self):
+        # 1 fight one episode
         self.episode_count += 1
         
+        # every 6 episode we save model
         if self.episode_count % self.update_target_every == 0:
+            # we set the weight
             self.target_model.set_weights(self.model.get_weights())
             logger.info(f"Target network updated at episode {self.episode_count}")
         
@@ -574,7 +577,8 @@ class DeepQAgent(Agent):
         self.lossHistory = LossHistory()
         self.total_timesteps = 0
         self.episode_count = 0
-        self.update_target_every = 2
+        # every 6 episode we save the model
+        self.update_target_every = 6
         self.lr_decay = 0.995
         
         super(DeepQAgent, self).__init__(resume=resume, name=name, moveList=moveList)
@@ -753,6 +757,15 @@ class DeepQAgent(Agent):
 
     
     def trainNetwork(self, data, model):
+        """Train the DQN model using the provided experience data.
+        
+        Args:
+            data: List of experience tuples from replay buffer
+            model: The Q-network model to train
+            
+        Returns:
+            The trained model
+        """
         if len(data) == 0:
             logger.warning("No data available for training. Skipping.")
             return model
@@ -762,73 +775,103 @@ class DeepQAgent(Agent):
         if batch_size == 0:
             return model
         
+        # Sample a mini-batch from the data
         indices = random.sample(range(len(data)), batch_size)
         minibatch = [data[i] for i in indices]
         
-        states = []
-        targets = []
+        # Determine the compute device (GPU if available, otherwise CPU)
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
         
         with tf.device(device):
             try:
-                with tf.GradientTape() as tape:
-                    for step in minibatch:
-                        # Ensure step has all required indices
-                        if len(step) < 5:
-                            logger.warning(f"Skipping invalid step data with length {len(step)}")
-                            continue
-                            
-                        state = step[0]  # STATE_INDEX is 0 in your tuple structure
-                        action = step[1]  # ACTION_INDEX is 1
-                        reward = step[2]  # REWARD_INDEX is 2
-                        done = step[3]    # DONE_INDEX is 3
-                        next_state = step[4]  # NEXT_STATE_INDEX is 4
-                        
-                        # Ensure action is within bounds
-                        if action >= self.actionSize:
-                            action = action % self.actionSize
-                        
-                        # Check state shape and ensure it's compatible with the model
-                        if isinstance(state, np.ndarray) and state.ndim == 2:
-                            q_values = model(state, training=False)[0]
-                        else:
-                            logger.warning(f"Skipping invalid state shape: {type(state)}")
-                            continue
-                            
-                        if len(q_values.shape) > 1:
-                            q_values = q_values.flatten()
-                        if len(q_values) != self.actionSize:
-                            q_values = np.ones(self.actionSize) / self.actionSize
-                        
-                        target = q_values.numpy().copy()
-                        if done:
-                            target[action] = reward
-                        else:
-                            # Check next_state shape
-                            if isinstance(next_state, np.ndarray) and next_state.ndim == 2:
-                                next_q_values = self.target_model(next_state, training=False)[0]
-                                if len(next_q_values.shape) > 1:
-                                    next_q_values = next_q_values.flatten()
-                                if len(next_q_values) != self.actionSize:
-                                    next_q_values = np.ones(self.actionSize) / self.actionSize
-                                best_action = np.argmax(model(next_state, training=False)[0])
-                                target[action] = reward + self.gamma * next_q_values[best_action]
-                        
-                        states.append(state[0])
-                        targets.append(target)
-                    
-                    if not states:
-                        logger.warning("No valid states found for training. Skipping.")
-                        return model
-                        
-                    states = tf.convert_to_tensor(states, dtype=tf.float32)
-                    targets = tf.convert_to_tensor(targets, dtype=tf.float32)
-                    
-                    predictions = model(states, training=True)
-                    loss = _huber_loss(targets, predictions)
+                # Prepare the states tensor for batch processing
+                states = []
+                actions = []
+                rewards = []
+                dones = []
+                next_states = []
                 
+                # Extract the components from the minibatch
+                for step in minibatch:
+                    if len(step) < 5:
+                        logger.warning(f"Skipping invalid step data with length {len(step)}")
+                        continue
+                    
+                    state = step[0]  # State tensor
+                    if not isinstance(state, np.ndarray) or state.ndim != 2:
+                        logger.warning(f"Skipping invalid state shape: {type(state)}")
+                        continue
+                    
+                    action = step[1]  # Action index
+                    if action >= self.actionSize:
+                        action = action % self.actionSize
+                    
+                    reward = step[2]  # Reward value
+                    done = step[3]    # Done flag
+                    next_state = step[4]  # Next state tensor
+                    
+                    if not isinstance(next_state, np.ndarray) or next_state.ndim != 2:
+                        logger.warning(f"Skipping invalid next_state shape: {type(next_state)}")
+                        continue
+                    
+                    states.append(state[0])
+                    actions.append(action)
+                    rewards.append(reward)
+                    dones.append(float(done))
+                    next_states.append(next_state[0])
+                
+                if not states:
+                    logger.warning("No valid states found for training. Skipping.")
+                    return model
+                
+                # Convert lists to tensors
+                states = tf.convert_to_tensor(states, dtype=tf.float32)
+                actions = tf.convert_to_tensor(actions, dtype=tf.int32)
+                rewards = tf.convert_to_tensor(rewards, dtype=tf.float32)
+                dones = tf.convert_to_tensor(dones, dtype=tf.float32)
+                next_states = tf.convert_to_tensor(next_states, dtype=tf.float32)
+                
+                # DOUBLE DQN:
+                # 1. Use online network to select actions
+                # 2. Use target network to evaluate those actions
+                
+                # Get next action selections using the online model
+                next_action_values = model(next_states, training=False)
+                next_actions = tf.argmax(next_action_values, axis=1, output_type=tf.int32)
+                
+                # Get Q-values for those actions using the target model
+                next_q_values = self.target_model(next_states, training=False)
+                
+                # Gather the Q-values for the selected actions
+                next_q_values_for_actions = tf.gather_nd(
+                    next_q_values,
+                    tf.stack([tf.range(tf.shape(next_actions)[0], dtype=tf.int32), next_actions], axis=1)
+                )
+                
+                # Calculate target Q values
+                target_q_values = rewards + (1.0 - dones) * self.gamma * next_q_values_for_actions
+                
+                # Use gradient tape for automatic differentiation
+                with tf.GradientTape() as tape:
+                    # Get current Q-value predictions
+                    q_values = model(states, training=True)
+                    
+                    # Gather Q-values for the actions that were taken
+                    q_values_for_actions = tf.gather_nd(
+                        q_values,
+                        tf.stack([tf.range(tf.shape(actions)[0], dtype=tf.int32), actions], axis=1)
+                    )
+                    
+                    # Calculate loss (using Huber loss for stability)
+                    loss = tf.reduce_mean(_huber_loss(target_q_values, q_values_for_actions))
+                
+                # Compute gradients
                 gradients = tape.gradient(loss, model.trainable_variables)
+                
+                # Clip gradients to prevent exploding gradients
                 gradients = [tf.clip_by_norm(g, 1.0) for g in gradients]
+                
+                # Apply gradients
                 model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
                 
                 # Update loss history

@@ -345,6 +345,7 @@ class Lobby:
             
         return state_log
 
+    # we actually play the game
     def play(self, state):
         """Main gameplay loop for an episode"""
         try:
@@ -565,14 +566,15 @@ class Lobby:
             self.episode_steps = 0
             self.episode_reward = 0
             
-            # Play each state in the episode
+            # play eash state opponent
             for state in states:
+                # log state
                 logger.info(f"Loading state: {state}")
                 try:
                     # Play the state
                     self.play(state=state)
                     
-                    # Review fight (train neural network)
+                    # so 1 state then we review the fight and save
                     if review and self.players[0].__class__.__name__ != "Agent":
                         if len(physical_devices) > 0:
                             with tf.device("/GPU:0"):
