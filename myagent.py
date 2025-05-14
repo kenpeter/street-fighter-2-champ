@@ -751,12 +751,18 @@ class DeepQAgent(Agent):
         
         return high_priority + recent + random_sample
 
+    
     def trainNetwork(self, data, model):
         if len(data) == 0:
+            logger.warning("No data available for training. Skipping.")
             return model
         
-        batch_size = 64
-        indices = random.sample(range(len(data)), min(batch_size, len(data)))
+        # Ensure we have valid data before sampling
+        batch_size = min(64, len(data))
+        if batch_size == 0:
+            return model
+        
+        indices = random.sample(range(len(data)), batch_size)
         minibatch = [data[i] for i in indices]
         
         states = []
@@ -764,50 +770,74 @@ class DeepQAgent(Agent):
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
         
         with tf.device(device):
-            with tf.GradientTape() as tape:
-                for step in minibatch:
-                    state = step[Agent.STATE_INDEX]
-                    action = step[Agent.ACTION_INDEX]
-                    reward = step[Agent.REWARD_INDEX]
-                    done = step[Agent.DONE_INDEX]
-                    next_state = step[Agent.NEXT_STATE_INDEX]
+            try:
+                with tf.GradientTape() as tape:
+                    for step in minibatch:
+                        # Ensure step has all required indices
+                        if len(step) < 5:
+                            logger.warning(f"Skipping invalid step data with length {len(step)}")
+                            continue
+                            
+                        state = step[0]  # STATE_INDEX is 0 in your tuple structure
+                        action = step[1]  # ACTION_INDEX is 1
+                        reward = step[2]  # REWARD_INDEX is 2
+                        done = step[3]    # DONE_INDEX is 3
+                        next_state = step[4]  # NEXT_STATE_INDEX is 4
+                        
+                        # Ensure action is within bounds
+                        if action >= self.actionSize:
+                            action = action % self.actionSize
+                        
+                        # Check state shape and ensure it's compatible with the model
+                        if isinstance(state, np.ndarray) and state.ndim == 2:
+                            q_values = model(state, training=False)[0]
+                        else:
+                            logger.warning(f"Skipping invalid state shape: {type(state)}")
+                            continue
+                            
+                        if len(q_values.shape) > 1:
+                            q_values = q_values.flatten()
+                        if len(q_values) != self.actionSize:
+                            q_values = np.ones(self.actionSize) / self.actionSize
+                        
+                        target = q_values.numpy().copy()
+                        if done:
+                            target[action] = reward
+                        else:
+                            # Check next_state shape
+                            if isinstance(next_state, np.ndarray) and next_state.ndim == 2:
+                                next_q_values = self.target_model(next_state, training=False)[0]
+                                if len(next_q_values.shape) > 1:
+                                    next_q_values = next_q_values.flatten()
+                                if len(next_q_values) != self.actionSize:
+                                    next_q_values = np.ones(self.actionSize) / self.actionSize
+                                best_action = np.argmax(model(next_state, training=False)[0])
+                                target[action] = reward + self.gamma * next_q_values[best_action]
+                        
+                        states.append(state[0])
+                        targets.append(target)
                     
-                    if action >= self.actionSize:
-                        action = action % self.actionSize
+                    if not states:
+                        logger.warning("No valid states found for training. Skipping.")
+                        return model
+                        
+                    states = tf.convert_to_tensor(states, dtype=tf.float32)
+                    targets = tf.convert_to_tensor(targets, dtype=tf.float32)
                     
-                    q_values = model(state, training=False)[0]
-                    if len(q_values.shape) > 1:
-                        q_values = q_values.flatten()
-                    if len(q_values) != self.actionSize:
-                        q_values = np.ones(self.actionSize) / self.actionSize
-                    
-                    target = q_values.numpy().copy()
-                    if done:
-                        target[action] = reward
-                    else:
-                        next_q_values = self.target_model(next_state, training=False)[0]
-                        if len(next_q_values.shape) > 1:
-                            next_q_values = next_q_values.flatten()
-                        if len(next_q_values) != self.actionSize:
-                            next_q_values = np.ones(self.actionSize) / self.actionSize
-                        best_action = np.argmax(model(next_state, training=False)[0])
-                        target[action] = reward + self.gamma * next_q_values[best_action]
-                    
-                    states.append(state[0])
-                    targets.append(target)
+                    predictions = model(states, training=True)
+                    loss = _huber_loss(targets, predictions)
                 
-                states = tf.convert_to_tensor(states, dtype=tf.float32)
-                targets = tf.convert_to_tensor(targets, dtype=tf.float32)
+                gradients = tape.gradient(loss, model.trainable_variables)
+                gradients = [tf.clip_by_norm(g, 1.0) for g in gradients]
+                model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
                 
-                predictions = model(states, training=True)
-                loss = _huber_loss(targets, predictions)
-            
-            gradients = tape.gradient(loss, model.trainable_variables)
-            gradients = [tf.clip_by_norm(g, 1.0) for g in gradients]
-            model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-        
-        if len(self.avg_loss_history) >= 2 and abs(self.avg_loss_history[-1] - self.avg_loss_history[-2]) > 2.0:
-            self.target_model.set_weights(model.get_weights())
-            logger.info("Emergency target network update due to loss spike")
+                # Update loss history
+                if hasattr(self, 'lossHistory'):
+                    self.lossHistory.on_epoch_end(0, {'loss': float(loss)})
+                    
+            except Exception as e:
+                logger.error(f"Error in trainNetwork: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
         
         return model
