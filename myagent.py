@@ -55,6 +55,7 @@ def _huber_loss(y_true, y_pred, clip_delta=1.0):
 from keras.utils import get_custom_objects
 get_custom_objects().update({"_huber_loss": _huber_loss})
 
+
 class CircularBuffer:
     """A circular buffer implementation for storing experiences efficiently."""
     
@@ -88,7 +89,8 @@ class CircularBuffer:
     
     def get_all(self):
         """Return all valid entries in the buffer"""
-        return [self.buffer[i] for i in range(self.size) if self.buffer[i] is not None]
+        # FIX: Create shallow copies of elements to avoid reference issues
+        return [item.copy() if isinstance(item, list) else item for item in self.buffer[:self.size] if item is not None]
     
     def __len__(self):
         return self.size
@@ -236,23 +238,23 @@ class DeepQAgent:
         next_state = step[DeepQAgent.NEXT_STATE_INDEX]
         reward = step[DeepQAgent.REWARD_INDEX]
         
-        # Health metrics
-        current_player_health = current_state.get("health", 100)
-        current_enemy_health = current_state.get("enemy_health", 100)
-        next_player_health = next_state.get("health", 100)
-        next_enemy_health = next_state.get("enemy_health", 100)
+        # Health metrics - FIX: Add proper None checks and default values
+        current_player_health = current_state.get("health", 100) if current_state else 100
+        current_enemy_health = current_state.get("enemy_health", 100) if current_state else 100
+        next_player_health = next_state.get("health", 100) if next_state else 100
+        next_enemy_health = next_state.get("enemy_health", 100) if next_state else 100
         
-        # Calculate damages
+        # Calculate damages - FIX: Ensure we don't get negative values
         damage_dealt = max(0, current_enemy_health - next_enemy_health)
         damage_taken = max(0, current_player_health - next_player_health)
         
-        # Position information
-        player_x = current_state.get("x_position", 0)
-        enemy_x = current_state.get("enemy_x_position", 0)
+        # Position information - FIX: Add proper None checks and default values
+        player_x = current_state.get("x_position", 0) if current_state else 0
+        enemy_x = current_state.get("enemy_x_position", 0) if current_state else 0
         distance = abs(player_x - enemy_x)
         
-        # Combo counter
-        combo_count = current_state.get("combo_count", 0)
+        # Combo counter - FIX: Add proper None check
+        combo_count = current_state.get("combo_count", 0) if current_state else 0
         
         # Damage rewards
         damage_reward = damage_dealt * 0.2
@@ -289,6 +291,8 @@ class DeepQAgent:
         self.total_timesteps += 1
         self.episode_rewards.append(modified_reward)
 
+
+
     def updateEpisodeMetrics(self):
         """Update metrics at the end of an episode"""
         self.episodes_completed += 1
@@ -315,11 +319,14 @@ class DeepQAgent:
         try:
             training_data = self.prepareMemoryForTraining(self.memory)
             if len(training_data) > 0:
+                # FIX: Store the original learning rate
+                original_lr = self.model.optimizer.learning_rate.numpy()
                 # Temporarily reduce learning rate for stability
-                temp_lr = self.model.optimizer.learning_rate.numpy() * 0.5
+                temp_lr = original_lr * 0.5
                 self.model.optimizer.learning_rate.assign(temp_lr)
                 self.model = self.trainNetwork(training_data, self.model)
-                self.model.optimizer.learning_rate.assign(temp_lr * 2)
+                # FIX: Restore the exact original learning rate, not double
+                self.model.optimizer.learning_rate.assign(original_lr)
         except Exception as e:
             logger.error(f"Error training network: {e}")
             import traceback
@@ -360,6 +367,7 @@ class DeepQAgent:
             self.printTrainingProgress()
         except Exception as e:
             logger.error(f"Error saving or printing: {e}")
+
 
     def loadModel(self):
         """Load model weights from file if available"""
@@ -524,32 +532,39 @@ class DeepQAgent:
                 # Choose device based on availability
                 device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
                 
+                # FIX: Use TensorFlow's memory management features
                 with tf.device(device):
-                    # Get model predictions
-                    q_values = self.model.predict(state_data, verbose=0)
-                    
-                    # Handle shape issues consistently
-                    if q_values.ndim == 1:
-                        q_values = np.reshape(q_values, (1, -1))
-                    
-                    # Validate prediction shape
-                    if q_values.shape[1] != self.actionSize:
-                        logger.warning(f"Model output shape mismatch: expected {self.actionSize}, got {q_values.shape[1]}")
-                        return self.getRandomMove(info)
-                    
-                    # Get best action
-                    move = np.argmax(q_values[0])
-                    
-                    # Handle potential index out of range
-                    if move >= len(self.moveList):
-                        move = move % len(self.moveList)
-                    
-                    # Convert move to frame inputs
-                    move_enum = list(self.moveList)[move]
-                    frameInputs = self.convertMoveToFrameInputs(move_enum, info)
-                    
-                    return move, frameInputs
-                    
+                    # Use a separate graph for prediction to avoid memory leaks
+                    with tf.Graph().as_default():
+                        # Get model predictions using TensorFlow's Session
+                        # Make sure we don't keep the whole computation graph in memory
+                        tf.keras.backend.clear_session()
+                        
+                        # Get model predictions
+                        q_values = self.model.predict(state_data, verbose=0)
+                        
+                        # Handle shape issues consistently
+                        if q_values.ndim == 1:
+                            q_values = np.reshape(q_values, (1, -1))
+                        
+                        # Validate prediction shape
+                        if q_values.shape[1] != self.actionSize:
+                            logger.warning(f"Model output shape mismatch: expected {self.actionSize}, got {q_values.shape[1]}")
+                            return self.getRandomMove(info)
+                        
+                        # Get best action
+                        move = np.argmax(q_values[0])
+                        
+                        # Handle potential index out of range
+                        if move >= len(self.moveList):
+                            move = move % len(self.moveList)
+                        
+                        # Convert move to frame inputs
+                        move_enum = list(self.moveList)[move]
+                        frameInputs = self.convertMoveToFrameInputs(move_enum, info)
+                        
+                        return move, frameInputs
+                        
             except Exception as e:
                 logger.error(f"Error in getMove: {e}")
                 return self.getRandomMove(info)
@@ -684,6 +699,12 @@ class DeepQAgent:
         Returns:
             Numpy array with processed features
         """
+        # FIX: Check if step is None to avoid errors
+        if step is None:
+            # Return a zero vector of the correct shape if step is None
+            feature_vector = np.zeros((1, self.stateSize), dtype=np.float32)
+            return feature_vector
+            
         feature_vector = []
         
         # Health features
@@ -812,6 +833,7 @@ class DeepQAgent:
                     
                     # Calculate target Q value
                     if done:
+                        # FIX: For terminal states, use only the immediate reward
                         target = reward
                     else:
                         # Double DQN: Use online network to select action, target network to evaluate
@@ -855,18 +877,20 @@ class DeepQAgent:
                 
         return model
 
+
     def calculateEpsilonFromTimesteps(self):
         """
         Calculate epsilon value based on timesteps with consistent decay schedule
         """
         START_EPSILON = 1.0
-        TIMESTEPS_TO_MIN_EPSILON = 1500000  # Corrected value
+        TIMESTEPS_TO_MIN_EPSILON = 1500000
         
-        # Linear decay
+        # FIX: Use a single, consistent decay approach
+        # Linear decay from START_EPSILON to EPSILON_MIN over TIMESTEPS_TO_MIN_EPSILON steps
         decay_per_step = (START_EPSILON - DeepQAgent.EPSILON_MIN) / TIMESTEPS_TO_MIN_EPSILON
         self.epsilon = max(DeepQAgent.EPSILON_MIN, START_EPSILON - (decay_per_step * self.total_timesteps))
         
-        # Boost epsilon if performance is poor
+        # Boost epsilon if performance is poor - keep this logic
         if self.episodes_completed > 20:
             # Calculate approximate win rate from recent episodes
             win_rate = sum(1 for r in self.avg_reward_history[-20:] if r > 50) / min(len(self.avg_reward_history), 20) if self.avg_reward_history else 0
@@ -874,8 +898,7 @@ class DeepQAgent:
                 self.epsilon = min(0.8, self.epsilon + 0.15)
                 logger.info(f"Performance boost: epsilon increased to {self.epsilon} due to low win rate")
         
-        # Apply additional decay
-        self.epsilon *= 0.995
+        # FIX: Remove the additional epsilon *= 0.995 decay that was causing inconsistency
         
         # Log significant changes
         if hasattr(self, '_last_logged_epsilon') and self._last_logged_epsilon is not None:
@@ -884,6 +907,7 @@ class DeepQAgent:
                 self._last_logged_epsilon = self.epsilon
         else:
             self._last_logged_epsilon = self.epsilon
+
 
     def updateEpsilon(self):
         """Update epsilon based on current timesteps"""
