@@ -504,56 +504,60 @@ class DeepQAgent:
 
     def getMove(self, obs, info):
         """
-        Get the next move using epsilon-greedy policy
-        
+        Get the next move using an epsilon-greedy policy.
+
         Args:
             obs: Current observation
             info: Additional information about the game state
-            
+
         Returns:
-            move: Selected move index
-            frameInputs: Frame inputs for the selected move
+            tuple: (move, frameInputs) where move is the selected move index and frameInputs are the frame inputs for the move
         """
+        # Ensure required fields are present in info
         for field in ["matches_won", "enemy_matches_won", "score"]:
             if field not in info:
                 info[field] = 0
                 logger.warning(f"{field} not found in info, defaulting to 0")
-        
+
+        # Epsilon-greedy policy: random move if epsilon is met
         if np.random.rand() <= self.epsilon:
             move, frameInputs = self.getRandomMove(info)
             return move, frameInputs
-        
-        else:
-            try:
-                state_data = self.prepareNetworkInputs(info)
-                
-                device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
-                
-                with tf.device(device):
-                    with tf.Graph().as_default():
-                        tf.keras.backend.clear_session()
-                        q_values = self.model.predict(state_data, verbose=0)
-                        
-                        if q_values.ndim == 1:
-                            q_values = np.reshape(q_values, (1, -1))
-                        
-                        if q_values.shape[1] != self.actionSize:
-                            logger.warning(f"Model output shape mismatch: expected {self.actionSize}, got {q_values.shape[1]}")
-                            return self.getRandomMove(info)
-                        
-                        move = np.argmax(q_values[0])
-                        
-                        if move >= len(self.moveList):
-                            move = move % len(self.moveList)
-                        
-                        move_enum = list(self.moveList)[move]
-                        frameInputs = self.convertMoveToFrameInputs(move_enum, info)
-                        
-                        return move, frameInputs
-                        
-            except Exception as e:
-                logger.error(f"Error in getMove: {e}")
-                return self.getRandomMove(info)
+
+        # Otherwise, predict move using the model
+        try:
+            state_data = self.prepareNetworkInputs(info)
+
+            # Select device (GPU if available, else CPU)
+            device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
+
+            # Perform prediction using the existing model
+            with tf.device(device):
+                q_values = self.model.predict(state_data, verbose=0)
+
+                # Ensure q_values has the expected shape
+                if q_values.ndim == 1:
+                    q_values = np.reshape(q_values, (1, -1))
+
+                if q_values.shape[1] != self.actionSize:
+                    logger.warning(f"Model output shape mismatch: expected {self.actionSize}, got {q_values.shape[1]}")
+                    return self.getRandomMove(info)
+
+                # Select the move with the highest Q-value
+                move = np.argmax(q_values[0])
+
+                # Ensure move is valid within moveList
+                if move >= len(self.moveList):
+                    move = move % len(self.moveList)
+
+                move_enum = list(self.moveList)[move]
+                frameInputs = self.convertMoveToFrameInputs(move_enum, info)
+
+                return move, frameInputs
+
+        except Exception as e:
+            logger.error(f"Error in getMove: {e}")
+            return self.getRandomMove(info)
 
     def initializeNetwork(self):
         """
