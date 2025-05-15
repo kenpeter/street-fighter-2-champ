@@ -734,20 +734,39 @@ class DeepQAgent:
         with tf.device(device):
             try:
                 for experience in data:
-                    if len(experience) < 5:
+                    if len(experience) < 7:  # We need all components including STATE_INDEX
+                        logger.warning(f"Experience has insufficient length: {len(experience)}")
                         continue
                         
-                    state = experience[0]
-                    action = experience[1]
-                    reward = experience[2]
-                    done = experience[3]
-                    next_state = experience[4]
+                    # Use state info (index 1) instead of raw observation (index 0)
+                    raw_state = experience[DeepQAgent.STATE_INDEX]  # This is state info dict
+                    processed_state = self.prepareNetworkInputs(raw_state)  # Convert to features
+                    
+                    action = experience[DeepQAgent.ACTION_INDEX]
+                    # Fix action if it's not an integer
+                    if isinstance(action, dict):
+                        logger.info(f"Action is a dictionary: {action}")
+                        # Try to extract the action value
+                        if hasattr(action, 'value'):
+                            action = action.value
+                        elif isinstance(action, dict) and len(action) > 0:
+                            action = next(iter(action.values()))
+                        else:
+                            action = 0  # Default
+                    
+                    reward = experience[DeepQAgent.REWARD_INDEX]
+                    
+                    # Use next state info (index 5) instead of raw next observation (index 4)
+                    raw_next_state = experience[DeepQAgent.NEXT_STATE_INDEX]
+                    processed_next_state = self.prepareNetworkInputs(raw_next_state)
+                    
+                    done = experience[DeepQAgent.DONE_INDEX]
                     
                     if action >= self.actionSize:
                         action = action % self.actionSize
                     
-                    # Get current Q values
-                    current_q = model.predict(state, verbose=0)[0]
+                    # Get current Q values from processed_state
+                    current_q = model.predict(processed_state, verbose=0)[0]
                     old_val = current_q[action]
                     
                     # Calculate target Q value using Double DQN
@@ -755,9 +774,9 @@ class DeepQAgent:
                         target = reward
                     else:
                         # Double DQN: select action using online network
-                        next_action = np.argmax(model.predict(next_state, verbose=0)[0])
+                        next_action = np.argmax(model.predict(processed_next_state, verbose=0)[0])
                         # Evaluate action using target network
-                        next_q = self.target_model.predict(next_state, verbose=0)[0][next_action]
+                        next_q = self.target_model.predict(processed_next_state, verbose=0)[0][next_action]
                         target = reward + self.gamma * next_q
                     
                     # Update Q value for the selected action
@@ -767,7 +786,8 @@ class DeepQAgent:
                     td_error = abs(old_val - target)
                     td_errors.append(td_error)
                     
-                    states_batch.append(state[0])
+                    # Store properly processed state representation
+                    states_batch.append(processed_state[0])  # Remove the batch dimension
                     targets_batch.append(current_q)
                 
                 if not states_batch:
