@@ -183,7 +183,7 @@ class DeepQAgent:
         self.learningRate = DeepQAgent.DEFAULT_LEARNING_RATE
         self.lossHistory = LossHistory()
         self.episode_count = 0
-        self.update_target_every = 6
+        self.update_target_every = 8
         self._last_logged_epsilon = None
         
         self.model = self.initializeNetwork()
