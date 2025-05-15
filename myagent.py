@@ -63,12 +63,12 @@ class CircularBuffer:
         self.buffer = [None] * max_size
         self.current_index = 0
         self.size = 0
-        # FIX #4: Add TD error tracking for proper prioritization
+        # Properly track TD error priorities
         self.priorities = np.zeros(max_size, dtype=np.float32)
     
     def append(self, item):
-        # FIX #4: Initialize with max priority for new experiences
-        new_priority = 1.0  # Max priority for new experiences
+        # Initialize with reasonable priority for new experiences
+        new_priority = 1.0  # Default priority for new experiences
         if self.size > 0:
             new_priority = np.max(self.priorities[:self.size])
         
@@ -83,21 +83,24 @@ class CircularBuffer:
             return [], []
             
         if use_priorities and np.sum(self.priorities[:self.size]) > 0:
-            # FIX #4: Use proper prioritized sampling
-            probs = self.priorities[:self.size] / np.sum(self.priorities[:self.size])
+            # Use proper prioritized sampling with alpha=0.6 to control prioritization strength
+            alpha = 0.6
+            probs = np.power(self.priorities[:self.size], alpha)
+            probs = probs / np.sum(probs)
             indices = np.random.choice(range(self.size), min(batch_size, self.size), 
                                       p=probs, replace=False)
         else:
-            indices = random.sample(range(self.size), min(batch_size, self.size))
+            indices = np.random.choice(range(self.size), min(batch_size, self.size), replace=False)
             
         return [self.buffer[i] for i in indices], indices
     
     def update_priorities(self, indices, td_errors):
         """Update priorities based on TD errors"""
-        # FIX #4: Use TD error for prioritization with offset to ensure non-zero probability
+        # Use proper TD error transformation with offset for non-zero probability
         for idx, td_error in zip(indices, td_errors):
             if 0 <= idx < self.size and self.buffer[idx] is not None:
-                self.priorities[idx] = abs(td_error) + 1e-5
+                # Use a power of 0.6 to transform TD error, added small constant for stability
+                self.priorities[idx] = (abs(td_error) + 1e-5) ** 0.6
     
     def get_all(self):
         """Return all valid entries in the buffer"""
@@ -134,7 +137,7 @@ class DeepQAgent:
         Initialize the DeepQAgent
         
         Args:
-            stateSize: Size of the state vector (increased to 45 for all features)
+            stateSize: Size of the state vector (fixed at 45 for all features)
             resume: Whether to resume training from saved model
             name: Name of the agent
             moveList: List of available moves
@@ -167,11 +170,13 @@ class DeepQAgent:
         self.avg_loss_history = []
         self.episode_outcomes = []  # Track win/loss outcomes
         
+        # Configure learning rate decay
         self.lr_step_size = 50000
         self.last_lr_update = 0
         self.lr_decay = 0.995
+        self.min_learning_rate = 1e-6  # Added minimum learning rate
         
-        # FIX #1: Increase stateSize to accommodate all features (5+7+2+3+9+8+9 = 43, +2 buffer = 45)
+        # Use fixed state size of 45 for all features
         self.stateSize = stateSize
         self.actionSize = len(moveList) if hasattr(moveList, '__len__') else 20
         self.gamma = DeepQAgent.DEFAULT_DISCOUNT_RATE
@@ -257,22 +262,24 @@ class DeepQAgent:
         
         combo_count = current_state.get("combo_count", 0) if current_state else 0
         
-        # FIX #2: Balance reward scaling to avoid extreme values
-        damage_reward = damage_dealt * 0.05  # Reduced from 0.2
-        damage_penalty = damage_taken * -0.05  # Reduced from -0.2
+        # Balance reward scaling with appropriate weights
+        damage_reward = damage_dealt * 0.05  
+        damage_penalty = damage_taken * -0.05
         
         # Score-based reward
         current_score = current_state.get('score', 0) if current_state else 0
         next_score = next_state.get('score', 0) if next_state else 0
         score_increase = max(0, next_score - current_score)
         
-        modified_reward = reward + damage_reward + damage_penalty + (score_increase * 0.005)  # Reduced from 0.01
+        modified_reward = reward + damage_reward + damage_penalty + (score_increase * 0.005)
         
-        # FIX #2: Scale win/loss rewards to be more balanced
+        # Balanced win/loss rewards with symmetrical structure
         if next_enemy_health <= 0:
-            modified_reward += 20 + (next_player_health / 100 * 10)  # Reduced from 150 + (health / 100 * 50)
+            health_factor = next_player_health / 100.0
+            modified_reward += 15 + (health_factor * 10)
         elif next_player_health <= 0:
-            modified_reward -= 15  # Reduced from -75
+            enemy_health_factor = next_enemy_health / 100.0
+            modified_reward -= 15 + (enemy_health_factor * 10)
         
         combo_bonus = min(combo_count, 10) * 0.5  # Cap and reduce combo bonus
         modified_reward += combo_bonus
@@ -325,22 +332,23 @@ class DeepQAgent:
         
         self.episode_outcomes.append(self.episode_outcome)
         
+        # Update target network periodically
         if self.episode_count % self.update_target_every == 0:
             if hasattr(self, "target_model"):
                 self.target_model.set_weights(self.model.get_weights())
                 logger.info(f"Target network updated at episode {self.episode_count}")
         
         try:
-            training_data, indices = self.prepareMemoryForTraining(self.memory)
-            if len(training_data) > 0:
-                original_lr = self.model.optimizer.learning_rate.numpy()
-                temp_lr = original_lr * 0.5
-                self.model.optimizer.learning_rate.assign(temp_lr)
+            # Sample a single, fixed batch for training
+            batch_size = 64  # Fixed batch size
+            training_data, indices = self.memory.sample(batch_size, use_priorities=True)
+            
+            if training_data:
+                # Train network with consistent learning rate
                 self.model, td_errors = self.trainNetwork(training_data, self.model, indices)
-                self.model.optimizer.learning_rate.assign(original_lr)
                 
-                # FIX #4: Update priorities based on TD errors
-                if td_errors is not None and indices:
+                # Update priorities based on TD errors if available
+                if td_errors is not None and len(td_errors) == len(indices):
                     self.memory.update_priorities(indices, td_errors)
         except Exception as e:
             logger.error(f"Error training network: {e}")
@@ -362,10 +370,11 @@ class DeepQAgent:
                 logger.error(f"Error updating epsilon: {e}")
         
         try:
+            # Apply learning rate decay with minimum threshold
             current_time = self.total_timesteps
             if current_time - self.last_lr_update >= self.lr_step_size:
                 current_lr = self.model.optimizer.learning_rate.numpy()
-                new_lr = current_lr * self.lr_decay
+                new_lr = max(self.min_learning_rate, current_lr * self.lr_decay)
                 self.model.optimizer.learning_rate.assign(new_lr)
                 logger.info(f"Learning rate decayed to {new_lr:.6f} at {current_time} timesteps")
                 self.last_lr_update = current_time
@@ -583,20 +592,33 @@ class DeepQAgent:
         device = "/GPU:0" if len(tf.config.list_physical_devices("GPU")) > 0 else "/CPU:0"
         
         with tf.device(device):
+            # Create a more robust network architecture
             input_layer = Input(shape=(self.stateSize,))
+            
+            # Improved normalization and initial processing
             x = BatchNormalization()(input_layer)
+            
+            # First dense block with residual connection
             x = Dense(256, activation='relu')(x)
             x = Dropout(0.3)(x)
             residual = x
             x = Dense(256, activation='linear')(x)
-            x = Add()([residual, x])
+            x = Add()([residual, x])  # Residual connection
             x = Activation('relu')(x)
+            
+            # Second processing block
             x = BatchNormalization()(x)
-            x = Dense(64, activation='relu')(x)
-            value_stream = Dense(32, activation='relu')(x)
+            x = Dense(128, activation='relu')(x)
+            x = Dropout(0.25)(x)
+            
+            # Dueling architecture: split into value and advantage streams
+            value_stream = Dense(64, activation='relu')(x)
             value = Dense(1)(value_stream)
-            advantage_stream = Dense(32, activation='relu')(x)
+            
+            advantage_stream = Dense(64, activation='relu')(x)
             advantage = Dense(self.actionSize)(advantage_stream)
+            
+            # Combine value and advantage
             q_values = Lambda(
                 lambda a: a[0] + (a[1] - tf.math.reduce_mean(a[1], axis=1, keepdims=True)),
                 output_shape=(self.actionSize,)
@@ -607,7 +629,7 @@ class DeepQAgent:
             model.compile(loss=_huber_loss, optimizer=optimizer)
             
             params = sum([np.prod(w.shape) for w in model.trainable_weights])
-            logger.info(f"Initialized Dueling DQN with residual connections (~{params:,} parameters)")
+            logger.info(f"Initialized Dueling DQN with improved architecture (~{params:,} parameters)")
             
             return model
 
@@ -621,13 +643,15 @@ class DeepQAgent:
         Returns:
             List of experiences and indices for training
         """
-        # FIX #4: Use proper prioritized experience replay
-        experiences, indices = memory.sample(2048, use_priorities=True)
+        # Use a fixed batch size for consistency
+        batch_size = 64
+        experiences, indices = memory.sample(batch_size, use_priorities=True)
+        
         if not experiences:
             return [], []
         
         formatted_data = []
-        for step in experiences:
+        for idx, step in enumerate(experiences):
             if len(step) < 7:  # Make sure we have all required components
                 continue
                 
@@ -640,15 +664,10 @@ class DeepQAgent:
             processed_state = self.prepareNetworkInputs(state)
             processed_next_state = self.prepareNetworkInputs(next_state)
             
+            # Keep track of the actual experience indices for updating priorities
             formatted_data.append([processed_state, action, reward, done, processed_next_state])
         
-        # Select a batch size based on available data
-        batch_size = min(64, len(formatted_data))
-        selected_indices = random.sample(range(len(formatted_data)), batch_size) if batch_size > 0 else []
-        selected_data = [formatted_data[i] for i in selected_indices]
-        selected_original_indices = [indices[i] for i in selected_indices]
-        
-        return selected_data, selected_original_indices
+        return formatted_data, indices
 
     def prepareNetworkInputs(self, step):
         """
@@ -665,7 +684,6 @@ class DeepQAgent:
             
         feature_vector = []
         
-        # FIX #1: Ensure all features are properly included without truncation
         # Health-related features (5)
         player_health = step.get("health", 100)
         enemy_health = step.get("enemy_health", 100)
@@ -715,6 +733,10 @@ class DeepQAgent:
         oneHotPlayerState[state_index] = 1
         feature_vector.extend(oneHotPlayerState)
         
+        # Add combo count as a feature
+        combo_count = step.get("combo_count", 0)
+        feature_vector.append(min(combo_count / 10.0, 1.0))  # Normalized combo count
+        
         # Ensure the feature vector is exactly the expected size
         if len(feature_vector) < self.stateSize:
             feature_vector.extend([0] * (self.stateSize - len(feature_vector)))
@@ -737,10 +759,6 @@ class DeepQAgent:
         """
         if len(data) == 0:
             logger.warning("No data available for training. Skipping.")
-            return model, None
-        
-        batch_size = min(64, len(data))
-        if batch_size == 0:
             return model, None
         
         states_batch = []
@@ -795,11 +813,14 @@ class DeepQAgent:
                 states_array = np.array(states_batch)
                 targets_array = np.array(targets_batch)
                 
+                # Use a consistent batch size for training
+                batch_size = len(states_array)
+                
                 # Train the model with the batch
                 history = model.fit(
                     states_array, 
                     targets_array,
-                    batch_size=min(32, len(states_array)),
+                    batch_size=min(32, batch_size),
                     epochs=1,
                     verbose=0
                 )
@@ -826,10 +847,12 @@ class DeepQAgent:
         decay_per_step = (START_EPSILON - DeepQAgent.EPSILON_MIN) / TIMESTEPS_TO_MIN_EPSILON
         self.epsilon = max(DeepQAgent.EPSILON_MIN, START_EPSILON - (decay_per_step * self.total_timesteps))
         
+        # Adaptive epsilon boost for poor performance
         if self.episodes_completed > 20:
             win_rate = sum(self.episode_outcomes[-20:]) / min(len(self.episode_outcomes), 20) if self.episode_outcomes else 0
             if win_rate < 0.15:
-                self.epsilon = min(0.8, self.epsilon + 0.15)
+                # More gradual boost that doesn't disrupt training as much
+                self.epsilon = min(0.6, self.epsilon + 0.1)
                 logger.info(f"Performance boost: epsilon increased to {self.epsilon} due to low win rate")
         
         if hasattr(self, '_last_logged_epsilon') and self._last_logged_epsilon is not None:
@@ -878,8 +901,8 @@ if __name__ == "__main__":
                 "status": state["status"],
                 "enemy_status": state["enemy_status"],
                 "combo_count": state["combo_count"] + (1 if random.random() < 0.1 else 0),
-                "matches_won": state["matches_won"] + (1 if random.random() < 0.2 else 0),
-                "enemy_matches_won": state["enemy_matches_won"] + (1 if random.random() < 0.15 else 0),
+                "matches_won": state["matches_won"] + (1 if state["enemy_health"] <= 5 and random.random() < 0.8 else 0),
+                "enemy_matches_won": state["enemy_matches_won"] + (1 if state["health"] <= 5 and random.random() < 0.6 else 0),
                 "score": state["score"] + random.randint(0, 50),
                 "match_duration": step,
             }
