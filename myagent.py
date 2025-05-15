@@ -633,42 +633,6 @@ class DeepQAgent:
             
             return model
 
-    def prepareMemoryForTraining(self, memory):
-        """
-        Prepare memory for training with prioritized experience replay
-        
-        Args:
-            memory: CircularBuffer object containing experiences
-            
-        Returns:
-            List of experiences and indices for training
-        """
-        # Use a fixed batch size for consistency
-        batch_size = 64
-        experiences, indices = memory.sample(batch_size, use_priorities=True)
-        
-        if not experiences:
-            return [], []
-        
-        formatted_data = []
-        for idx, step in enumerate(experiences):
-            if len(step) < 7:  # Make sure we have all required components
-                continue
-                
-            state = step[DeepQAgent.STATE_INDEX]
-            next_state = step[DeepQAgent.NEXT_STATE_INDEX]
-            action = step[DeepQAgent.ACTION_INDEX]
-            reward = step[DeepQAgent.REWARD_INDEX]
-            done = step[DeepQAgent.DONE_INDEX]
-            
-            processed_state = self.prepareNetworkInputs(state)
-            processed_next_state = self.prepareNetworkInputs(next_state)
-            
-            # Keep track of the actual experience indices for updating priorities
-            formatted_data.append([processed_state, action, reward, done, processed_next_state])
-        
-        return formatted_data, indices
-
     def prepareNetworkInputs(self, step):
         """
         Convert game state information to network input features
