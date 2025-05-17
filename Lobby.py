@@ -50,7 +50,7 @@ class Lobby_Modes(Enum):
 
 class Lobby:
     NO_ACTION = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-    FRAME_RATE = 1 / 300
+    FRAME_RATE = 1 / 60  # Align with 60 FPS for smoother rendering
 
     @staticmethod
     def getStates():
@@ -427,6 +427,7 @@ class Lobby:
 
     def enterFrameInputs(self):
         self.lastReward = 0
+        start_time = time.time()
         for frame in self.frameInputs:
             step_result = self.environment.step(frame)
             if len(step_result) == 4:
@@ -446,12 +447,16 @@ class Lobby:
                 )
                     
             if self.done:
+                frame_time = (time.time() - start_time) * 1000  # ms
+                logger.debug(f"Frame processing time: {frame_time:.2f}ms")
                 return info, obs
                     
             if self.render:
                 self.environment.render()
-                time.sleep(Lobby.FRAME_RATE)
+                # Removed time.sleep to avoid artificial delays
                     
+        frame_time = (time.time() - start_time) * 1000  # ms
+        logger.debug(f"Frame processing time: {frame_time:.2f}ms")
         return info, obs
 
     def executeTrainingRun(self, review=True, episodes=1):
@@ -692,7 +697,7 @@ if __name__ == "__main__":
         stateSize=40,
         resume=args.resume,
         name=args.name,
-        lobby=lobby,  # Pass Lobby instance
+        lobby=lobby,
     )
     
     lobby.addPlayer(agent)
