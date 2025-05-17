@@ -121,10 +121,10 @@ class DeepQAgent:
     NEXT_STATE_INDEX = 5
     DONE_INDEX = 6
     MAX_DATA_LENGTH = 10000
-    EPSILON_MIN = 0.1
-    DEFAULT_EPSILON_DECAY = 0.9999  # Slower decay for gradual epsilon reduction
+    EPSILON_MIN = 0.05
+    DEFAULT_EPSILON_DECAY = 0.9995  # Slower decay for gradual epsilon reduction
     DEFAULT_DISCOUNT_RATE = 0.98
-    DEFAULT_LEARNING_RATE = 0.0001
+    DEFAULT_LEARNING_RATE = 0.0003
     WIN_RATE_WINDOW = 10
     WIN_RATE_THRESHOLD = 0.3
     EPSILON_INCREMENT = 0.1
@@ -511,27 +511,27 @@ if __name__ == "__main__":
             }
 
             damage_dealt = max(0, state["enemy_health"] - next_state["enemy_health"])
-            damage_reward = damage_dealt * 0.1  # Scale factor can be tuned
+            damage_reward = damage_dealt * 0.4  # Scale factor can be tuned
 
             damage_taken = max(0, state["health"] - next_state["health"])
             defense_reward = -damage_taken * 0.15  # Slightly higher penalty for taking damage
 
             health_diff = next_state["health"] - next_state["enemy_health"] 
-            health_diff_reward = health_diff * 0.005  # Small reward for health advantage
-
+            health_diff_reward = health_diff * 0.01  # Small reward for health advantage
 
             reward = damage_reward + defense_reward + health_diff_reward
 
 
             # Add significant win/loss rewards
             if next_state["enemy_health"] <= 0:  # Win condition
-                reward += 10.0  # Large positive reward for winning
+                reward += 20.0  # Large positive reward for winning
             elif next_state["health"] <= 0:  # Loss condition
-                reward -= 10.0  # Large negative reward for losing
+                reward -= 15.0  # Large negative reward for losing
 
             done = next_state["health"] <= 0 or next_state["enemy_health"] <= 0
             agent.recordStep([None, state, move, reward, None, next_state, done])
             if done:
                 break
+        # we record the fight in mem and use it for train
         agent.reviewFight()
         logger.info(f"Episode {episode+1} completed. Epsilon: {agent.epsilon:.4f}")
