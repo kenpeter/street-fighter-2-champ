@@ -510,8 +510,18 @@ if __name__ == "__main__":
                 "enemy_character": state["enemy_character"],
             }
 
-            # we damage enemy get 1.0, otherwise -0.5 
-            reward = 1.0 if next_state["enemy_health"] < state["enemy_health"] else -0.5
+            damage_dealt = max(0, state["enemy_health"] - next_state["enemy_health"])
+            damage_reward = damage_dealt * 0.1  # Scale factor can be tuned
+
+            damage_taken = max(0, state["health"] - next_state["health"])
+            defense_reward = -damage_taken * 0.15  # Slightly higher penalty for taking damage
+
+            health_diff = next_state["health"] - next_state["enemy_health"] 
+            health_diff_reward = health_diff * 0.005  # Small reward for health advantage
+
+
+            reward = damage_reward + defense_reward + health_diff_reward
+
 
             # Add significant win/loss rewards
             if next_state["enemy_health"] <= 0:  # Win condition
