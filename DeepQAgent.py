@@ -511,7 +511,7 @@ if __name__ == "__main__":
             }
 
             damage_dealt = max(0, state["enemy_health"] - next_state["enemy_health"])
-            damage_reward = damage_dealt * 0.4  # Scale factor can be tuned
+            damage_reward = damage_dealt * 0.3  # Scale factor can be tuned
 
             damage_taken = max(0, state["health"] - next_state["health"])
             defense_reward = -damage_taken * 0.15  # Slightly higher penalty for taking damage
