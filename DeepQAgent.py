@@ -509,7 +509,10 @@ if __name__ == "__main__":
                 "enemy_status": state["enemy_status"],
                 "enemy_character": state["enemy_character"],
             }
+
+            # we damage enemy get 1.0, otherwise -0.5 
             reward = 1.0 if next_state["enemy_health"] < state["enemy_health"] else -0.5
+
             done = next_state["health"] <= 0 or next_state["enemy_health"] <= 0
             agent.recordStep([None, state, move, reward, None, next_state, done])
             if done:
