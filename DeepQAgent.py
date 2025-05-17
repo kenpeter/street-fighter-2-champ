@@ -513,6 +513,12 @@ if __name__ == "__main__":
             # we damage enemy get 1.0, otherwise -0.5 
             reward = 1.0 if next_state["enemy_health"] < state["enemy_health"] else -0.5
 
+            # Add significant win/loss rewards
+            if next_state["enemy_health"] <= 0:  # Win condition
+                reward += 10.0  # Large positive reward for winning
+            elif next_state["health"] <= 0:  # Loss condition
+                reward -= 10.0  # Large negative reward for losing
+
             done = next_state["health"] <= 0 or next_state["enemy_health"] <= 0
             agent.recordStep([None, state, move, reward, None, next_state, done])
             if done:
