@@ -122,18 +122,20 @@ class DeepQAgent:
     DONE_INDEX = 6
     MAX_DATA_LENGTH = 10000
     EPSILON_MIN = 0.05
-    DEFAULT_EPSILON_DECAY = 0.9995  # Slower decay for gradual epsilon reduction
+    DEFAULT_EPSILON_DECAY = 0.99995  # Slower decay for gradual epsilon reduction
     DEFAULT_DISCOUNT_RATE = 0.98
     DEFAULT_LEARNING_RATE = 0.0003
     WIN_RATE_WINDOW = 10
     WIN_RATE_THRESHOLD = 0.3
     EPSILON_INCREMENT = 0.1
     TIMESTEP_SCALE = 1000000  # Larger scale to reduce timestep impact
+    # Default higher epsilon for better exploration
+    DEFAULT_EPSILON = 0.8
 
     stateIndices = {512: 0, 514: 1, 516: 2, 518: 3, 520: 4, 522: 5, 524: 6, 526: 7, 532: 8}
     doneKeys = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
 
-    def __init__(self, stateSize=40, resume=False, epsilon=1, name=None, moveList=Moves, lobby=None):
+    def __init__(self, stateSize=40, resume=False, epsilon=None, name=None, moveList=Moves, lobby=None):
         """Initializes the agent and the underlying neural network"""
         self.name = name or self.__class__.__name__
         self.moveList = moveList
@@ -147,20 +149,40 @@ class DeepQAgent:
         self.memory = []
         self.model = self.initializeNetwork()
         
-        # Initialize stats
-        self.total_timesteps = 0
+        # Initialize with a higher default epsilon if none provided
+        epsilon = epsilon if epsilon is not None else self.DEFAULT_EPSILON
+        
+        # Initialize stats with default epsilon
         self.stats = {"epsilon": epsilon, "total_timesteps": 0, "wins": 0, "losses": 0}
         
         # Load stats in resume mode
         if resume:
             self.loadModel()
             self.loadStats()
+            
+            # Safety check - if epsilon is too low, reset it to a higher value
+            if self.stats["epsilon"] < 0.4:
+                logger.info(f"Epsilon too low ({self.stats['epsilon']:.4f}), resetting to 0.8")
+                self.stats["epsilon"] = self.DEFAULT_EPSILON
         
-        # Set epsilon: load from stats in resume mode, otherwise use default
-        self.epsilon = self.stats["epsilon"] if resume else epsilon
+        # Set epsilon from stats
+        self.epsilon = self.stats["epsilon"]
+        self.total_timesteps = self.stats["total_timesteps"]
         
-        # Adjust epsilon based on win rate and timesteps
-        self.adjustEpsilonAtStart()
+        # Update lobby stats if available
+        if self.lobby and hasattr(self.lobby, 'training_stats'):
+            # Initialize lobby stats if necessary
+            if not self.lobby.training_stats:
+                self.lobby.training_stats = {}
+            
+            # Ensure wins and losses are present in lobby stats
+            if "wins" not in self.lobby.training_stats:
+                self.lobby.training_stats["wins"] = self.stats.get("wins", 0)
+            if "losses" not in self.lobby.training_stats:
+                self.lobby.training_stats["losses"] = self.stats.get("losses", 0)
+        
+        # Save adjusted stats to file
+        self.saveStats()
         
         self.target_model = self.initializeNetwork()
         self.target_model.set_weights(self.model.get_weights())
@@ -201,73 +223,37 @@ class DeepQAgent:
                 logger.info(f"Loaded stats from {stats_path}: {self.stats}")
             except Exception as e:
                 logger.error(f"Error loading stats from {stats_path}: {e}")
-                self.stats = {"epsilon": 1.0, "total_timesteps": 0, "wins": 0, "losses": 0}
+                self.stats = {"epsilon": self.DEFAULT_EPSILON, "total_timesteps": 0, "wins": 0, "losses": 0}
         else:
             logger.info(f"No stats file found at {stats_path}. Using default stats.")
-            self.stats = {"epsilon": 1.0, "total_timesteps": 0, "wins": 0, "losses": 0}
+            self.stats = {"epsilon": self.DEFAULT_EPSILON, "total_timesteps": 0, "wins": 0, "losses": 0}
 
     def saveStats(self):
         """Save stats to file"""
         os.makedirs("stats", exist_ok=True)
         stats_path = f"stats/{self.name}_stats.json"
+        
+        # Update wins/losses from lobby if available
+        if self.lobby and hasattr(self.lobby, 'training_stats'):
+            wins = self.lobby.training_stats.get("wins", 0)
+            losses = self.lobby.training_stats.get("losses", 0)
+        else:
+            wins = self.stats.get("wins", 0)
+            losses = self.stats.get("losses", 0)
+        
         self.stats.update({
             "epsilon": self.epsilon,
             "total_timesteps": self.total_timesteps,
-            "wins": self.lobby.training_stats.get("wins", 0) if self.lobby else self.stats.get("wins", 0),
-            "losses": self.lobby.training_stats.get("losses", 0) if self.lobby else self.stats.get("losses", 0)
+            "wins": wins,
+            "losses": losses
         })
+        
         try:
             with open(stats_path, 'w') as f:
                 json.dump(self.stats, f, indent=2)
             logger.info(f"Saved stats to {stats_path}: {self.stats}")
         except Exception as e:
             logger.error(f"Error saving stats to {stats_path}: {e}")
-
-    def adjustEpsilonAtStart(self):
-        """Adjust epsilon at script start based on win rate and total timesteps"""
-        if not self.lobby:
-            logger.warning("No lobby provided. Skipping epsilon adjustment at start.")
-            return
-        
-        # Get current run stats
-        current_wins = self.lobby.training_stats.get("wins", 0)
-        current_losses = self.lobby.training_stats.get("losses", 0)
-        current_total = current_wins + current_losses
-        
-        # Get historical stats
-        historical_wins = self.stats.get("wins", 0)
-        historical_losses = self.stats.get("losses", 0)
-        historical_total = historical_wins + historical_losses
-        
-        # Combine for overall win rate
-        total_wins = current_wins + historical_wins
-        total_losses = current_losses + historical_losses
-        total_games = total_wins + total_losses
-        
-        # Compute win rate (use recent games if available, else overall)
-        if total_games > 0:
-            win_rate = total_wins / total_games
-            logger.info(f"Overall win rate: {win_rate:.2f} ({total_wins}/{total_games})")
-            if win_rate < self.WIN_RATE_THRESHOLD:
-                old_epsilon = self.epsilon
-                self.epsilon = min(self.epsilon + self.EPSILON_INCREMENT, 1.0)
-                logger.info(
-                    f"Low win rate ({win_rate:.2f} < {self.WIN_RATE_THRESHOLD}). "
-                    f"Increased epsilon from {old_epsilon:.4f} to {self.epsilon:.4f}"
-                )
-        
-        # Scale epsilon based on total timesteps
-        timestep_factor = max(0, 1 - (self.total_timesteps / self.TIMESTEP_SCALE))
-        old_epsilon = self.epsilon
-        self.epsilon = max(self.EPSILON_MIN, self.epsilon * timestep_factor)
-        if old_epsilon != self.epsilon:
-            logger.info(
-                f"Scaled epsilon by timestep factor {timestep_factor:.4f} "
-                f"(timesteps: {self.total_timesteps}). Epsilon: {self.epsilon:.4f}"
-            )
-        
-        # Save updated epsilon
-        self.saveStats()
 
     def prepareNetworkInputs(self, step):
         """Generates a feature vector from the current game state information to feed into the network"""
@@ -387,7 +373,6 @@ class DeepQAgent:
         
         return model
 
-    
     def reviewFight(self):
         """Review and learn from the previous fight, then save the model"""
         if self.memory:
@@ -404,30 +389,8 @@ class DeepQAgent:
         if self.total_timesteps % 100 == 0:
             self.target_model.set_weights(self.model.get_weights())
         
-        # Adjust epsilon based on recent win rate if --resume is active
-        if self.resume and self.lobby:
-            wins = self.lobby.training_stats.get("wins", 0)
-            losses = self.lobby.training_stats.get("losses", 0)
-            total_games = wins + losses
-            
-            # Use last WIN_RATE_WINDOW episodes or all if fewer
-            if total_games > 0:
-                recent_wins = min(wins, self.WIN_RATE_WINDOW)
-                recent_losses = min(losses, self.WIN_RATE_WINDOW - recent_wins)
-                recent_total = recent_wins + recent_losses
-                if recent_total > 0:
-                    win_rate = recent_wins / recent_total
-                    if win_rate < self.WIN_RATE_THRESHOLD:
-                        old_epsilon = self.epsilon
-                        self.epsilon = min(max(self.epsilon + self.EPSILON_INCREMENT, 0.5), 1.0)
-                        logger.info(
-                            f"Low win rate ({win_rate:.2f} < {self.WIN_RATE_THRESHOLD}). "
-                            f"Increased epsilon from {old_epsilon:.4f} to {self.epsilon:.4f}"
-                        )
-        
-        # Normal epsilon decay
-        if self.epsilon > self.EPSILON_MIN:
-            self.epsilon *= self.epsilonDecay
+        # Adjust epsilon based on recent win rate
+        self.adjustEpsilonAfterFight()
         
         # Save model after every fight
         self.saveModel()
@@ -436,9 +399,44 @@ class DeepQAgent:
         # Save stats after epsilon adjustment
         self.saveStats()
 
+    def adjustEpsilonAfterFight(self):
+        """Simplified epsilon adjustment based on win rate"""
+        # Get wins and losses
+        if self.lobby and hasattr(self.lobby, 'training_stats'):
+            wins = self.lobby.training_stats.get("wins", 0)
+            losses = self.lobby.training_stats.get("losses", 0)
+        else:
+            wins = self.stats.get("wins", 0)
+            losses = self.stats.get("losses", 0)
+        
+        total_games = wins + losses
+        
+        # Only adjust if we have some games played
+        if total_games > 0:
+            win_rate = wins / total_games
+            
+            # If win rate is below threshold, increase epsilon
+            if win_rate < self.WIN_RATE_THRESHOLD:
+                old_epsilon = self.epsilon
+                # Increase epsilon but cap at 0.9
+                self.epsilon = min(self.epsilon + self.EPSILON_INCREMENT, 0.9)
+                if old_epsilon != self.epsilon:
+                    logger.info(f"Low win rate ({win_rate:.2f}). Increased epsilon: {old_epsilon:.2f} -> {self.epsilon:.2f}")
+            else:
+                # Normal epsilon decay if win rate is good
+                if self.epsilon > self.EPSILON_MIN:
+                    self.epsilon *= self.epsilonDecay
+        else:
+            # If no games recorded, keep epsilon high
+            if self.epsilon < 0.7:
+                self.epsilon = 0.7
+                logger.info(f"No games recorded. Setting epsilon to {self.epsilon}")
+            # Still decay epsilon but at a slower rate
+            elif self.epsilon > self.EPSILON_MIN:
+                self.epsilon *= self.epsilonDecay
 
     def saveModel(self):
-        """Save model weights and stats to file with correct filename format"""
+        """Save model weights to file with correct filename format"""
         try:
             # Create models directory if it doesn't exist
             os.makedirs("models", exist_ok=True)
@@ -465,7 +463,6 @@ class DeepQAgent:
             import traceback
             logger.error(traceback.format_exc())
 
-        
     def loadModel(self):
         """Load model weights from file if available"""
         model_path = f"models/{self.name}Model.h5"
@@ -473,6 +470,7 @@ class DeepQAgent:
             self.model.load_weights(model_path)
             logger.info(f"Loaded model from {model_path}")
             self.target_model.set_weights(self.model.get_weights())
+
 
 # Register custom loss function
 from tensorflow.keras.utils import get_custom_objects
@@ -520,7 +518,6 @@ if __name__ == "__main__":
             health_diff_reward = health_diff * 0.01  # Small reward for health advantage
 
             reward = damage_reward + defense_reward + health_diff_reward
-
 
             # Add significant win/loss rewards
             if next_state["enemy_health"] <= 0:  # Win condition
