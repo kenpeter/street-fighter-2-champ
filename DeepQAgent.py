@@ -327,7 +327,7 @@ class DeepQAgent:
     def convertMoveToFrameInputs(self, move, info):
         """Convert a move to a list of button arrays."""
         frameInputs = Moves.getMoveInputs(move)
-        # Handle directional moves
+        # direction move means direction is dep on user facing
         if Moves.isDirectionalMove(move):
             facing_right = info.get("x_position", 100) < info.get("enemy_x_position", 200)
             frameInputs = frameInputs[0 if facing_right else 1]
@@ -387,8 +387,9 @@ class DeepQAgent:
         
         return model
 
+    
     def reviewFight(self):
-        """Review and learn from the previous fight, adjust epsilon if win rate is low"""
+        """Review and learn from the previous fight, then save the model"""
         if self.memory:
             data = []
             for step in self.memory:
@@ -428,15 +429,43 @@ class DeepQAgent:
         if self.epsilon > self.EPSILON_MIN:
             self.epsilon *= self.epsilonDecay
         
+        # Save model after every fight
+        self.saveModel()
+        logger.info("Model saved after fight")
+        
         # Save stats after epsilon adjustment
         self.saveStats()
 
-    def saveModel(self):
-        """Save model weights and stats to file"""
-        os.makedirs("models", exist_ok=True)
-        self.model.save_weights(f"models/{self.name}Model.h5")
-        self.saveStats()
 
+    def saveModel(self):
+        """Save model weights and stats to file with correct filename format"""
+        try:
+            # Create models directory if it doesn't exist
+            os.makedirs("models", exist_ok=True)
+            
+            # Use the correct filename with .weights.h5 extension
+            model_path = f"models/{self.name}Model.weights.h5"
+            
+            # Save model with proper filename
+            self.model.save_weights(model_path)
+            
+            # Verify the file was created
+            if os.path.exists(model_path):
+                file_size = os.path.getsize(model_path)
+                logger.info(f"Model saved successfully to {model_path} (size: {file_size} bytes)")
+            else:
+                logger.error(f"Failed to save model: File {model_path} does not exist after save attempt")
+            
+            # Also save stats
+            self.saveStats()
+            
+        except Exception as e:
+            logger.error(f"Error saving model: {str(e)}")
+            # Print stack trace for debugging
+            import traceback
+            logger.error(traceback.format_exc())
+
+        
     def loadModel(self):
         """Load model weights from file if available"""
         model_path = f"models/{self.name}Model.h5"
@@ -450,8 +479,11 @@ from tensorflow.keras.utils import get_custom_objects
 get_custom_objects().update({"_huber_loss": DeepQAgent._huber_loss})
 
 if __name__ == "__main__":
+    # agent
     agent = DeepQAgent(stateSize=40)
+    # 10 episode
     for episode in range(10):
+        # clean up memory for next fight
         agent.prepareForNextFight()
         for step in range(100):
             state = {
@@ -484,4 +516,3 @@ if __name__ == "__main__":
                 break
         agent.reviewFight()
         logger.info(f"Episode {episode+1} completed. Epsilon: {agent.epsilon:.4f}")
-    agent.saveModel()
