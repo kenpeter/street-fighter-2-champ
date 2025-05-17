@@ -1,23 +1,126 @@
 import numpy as np
 import random
 import tensorflow as tf
-from tensorflow.python import keras
-from keras.models import Sequential
-from keras.layers import Dense
-from keras.optimizers import Adam
-from keras import backend as K
-import keras.losses
-from LossHistory import LossHistory
-from DefaultMoveList import Moves
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Input
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras import backend as K
 import os
 import logging
-from keras.layers import Input
+from enum import Enum
+
+# Define Moves Enum and MovesDict
+class Moves(Enum):
+    """Enum of the set of possible moves the agent is allowed to perform"""
+    Idle = 0
+    Right = 1
+    DownRight = 2
+    Down = 3
+    DownLeft = 4
+    Left = 5
+    UpLeft = 6
+    Up = 7
+    UpRight = 8
+    LightPunch = 9
+    MediumPunch = 10
+    HeavyPunch = 11
+    LightKick = 12
+    MediumKick = 13
+    HeavyKick = 14
+    CrouchLightPunch = 15
+    CrouchMediumPunch = 16
+    CrouchHeavyPunch = 17
+    CrouchLightKick = 18
+    CrouchMediumKick = 19
+    CrouchHeavyKick = 20
+    LeftShoulderThrow = 21
+    RightShoulderThrow = 22
+    LeftSomersaultThrow = 23
+    RightSomersaultThrow = 24
+    Fireball = 25
+    HurricaneKick = 26
+    DragonUppercut = 27
+
+    @staticmethod
+    def getMoveInputs(moveName):
+        """Takes in the enum moveName and returns the set of frame inputs to perform that move"""
+        return MovesDict[moveName]
+
+    @staticmethod
+    def getRandomMove():
+        """Returns the name and frame inputs of a randomly selected move"""
+        moveName = random.choice(list(Moves))
+        moveInputs = MovesDict[moveName]
+        return moveName, moveInputs
+
+    @staticmethod
+    def isDirectionalMove(move):
+        """Determines if the selected move's inputs depend on the player's direction"""
+        return move in [Moves.Fireball, Moves.HurricaneKick, Moves.DragonUppercut]
+
+# Button indices: ["B", "A", "MODE", "START", "UP", "DOWN", "LEFT", "RIGHT", "C", "Y", "X", "Z"]
+MovesDict = {
+    Moves.Idle: [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+    Moves.Right: [[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]],
+    Moves.DownRight: [[0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0]],
+    Moves.Down: [[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]],
+    Moves.DownLeft: [[0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]],
+    Moves.Left: [[0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]],
+    Moves.UpLeft: [[0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0]],
+    Moves.Up: [[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]],
+    Moves.UpRight: [[0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0]],
+    Moves.LightPunch: [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0]],  # X
+    Moves.MediumPunch: [[0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]],  # Y
+    Moves.HeavyPunch: [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]],  # Z
+    Moves.LightKick: [[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]],  # C
+    Moves.MediumKick: [[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],  # A
+    Moves.HeavyKick: [[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],  # B
+    Moves.CrouchLightPunch: [[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]],  # DOWN + X
+    Moves.CrouchMediumPunch: [[0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0]],  # DOWN + Y
+    Moves.CrouchHeavyPunch: [[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1]],  # DOWN + Z
+    Moves.CrouchLightKick: [[0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0]],  # DOWN + C
+    Moves.CrouchMediumKick: [[0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]],  # DOWN + A
+    Moves.CrouchHeavyKick: [[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]],  # DOWN + B
+    Moves.LeftShoulderThrow: [[0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0]],  # LEFT + X
+    Moves.RightShoulderThrow: [[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0]],  # RIGHT + X
+    Moves.LeftSomersaultThrow: [[0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]],  # LEFT + Z
+    Moves.RightSomersaultThrow: [[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1]],  # RIGHT + Z
+    Moves.Fireball: [
+        # Facing right: DOWN, DOWN+RIGHT, Y
+        [[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]],
+        # Facing left: DOWN, DOWN+LEFT, Y
+        [[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]]
+    ],
+    Moves.HurricaneKick: [
+        # Facing right: DOWN, DOWN+LEFT, B
+        [[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
+        # Facing left: DOWN, DOWN+RIGHT, B
+        [[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]]
+    ],
+    Moves.DragonUppercut: [
+        # Facing right: RIGHT, DOWN, Y
+        [[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0], [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]],
+        # Facing left: LEFT, DOWN, Y
+        [[0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]]
+    ],
+}
+
+# Placeholder for LossHistory
+class LossHistory:
+    def __init__(self):
+        self.losses = []
+    
+    def on_epoch_end(self, epoch, logs=None):
+        self.losses.append(logs.get('loss'))
+    
+    def losses_clear(self):
+        self.losses = []
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Agent")
 
 class DeepQAgent:
-    """An agent that implements the Deep Q Neural Network Reinforcement Algorithm to learn street fighter 2"""
+    """An agent that implements the Deep Q Neural Network Reinforcement Algorithm to learn Street Fighter 2"""
     
     OBSERVATION_INDEX = 0
     STATE_INDEX = 1
@@ -34,17 +137,8 @@ class DeepQAgent:
 
     stateIndices = {512: 0, 514: 1, 516: 2, 518: 3, 520: 4, 522: 5, 524: 6, 526: 7, 532: 8}
     doneKeys = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
-    ACTION_BUTTONS = ['X', 'Y', 'Z', 'A', 'B', 'C']
 
-    def _huber_loss(y_true, y_pred, clip_delta=1.0):
-        """Implementation of huber loss to use as the loss function for the model"""
-        error = y_true - y_pred
-        cond = K.abs(error) <= clip_delta
-        squared_loss = 0.5 * K.square(error)
-        quadratic_loss = 0.5 * K.square(clip_delta) + clip_delta * (K.abs(error) - clip_delta)
-        return K.mean(tf.where(cond, squared_loss, quadratic_loss))
-
-    def __init__(self, stateSize=32, resume=False, epsilon=1, name=None, moveList=Moves):
+    def __init__(self, stateSize=40, resume=False, epsilon=1, name=None, moveList=Moves):
         """Initializes the agent and the underlying neural network"""
         self.name = name or self.__class__.__name__
         self.moveList = moveList
@@ -52,7 +146,6 @@ class DeepQAgent:
         self.actionSize = len(moveList)
         self.gamma = DeepQAgent.DEFAULT_DISCOUNT_RATE
         
-        # Use resume parameter instead of load
         self.epsilon = DeepQAgent.EPSILON_MIN if resume else epsilon
         self.epsilonDecay = DeepQAgent.DEFAULT_EPSILON_DECAY
         self.learningRate = DeepQAgent.DEFAULT_LEARNING_RATE
@@ -60,7 +153,6 @@ class DeepQAgent:
         self.memory = []
         self.model = self.initializeNetwork()
         
-        # Load model if resuming
         if resume:
             self.loadModel()
             
@@ -80,11 +172,18 @@ class DeepQAgent:
             Dense(self.actionSize, activation='linear')
         ])
         
-        # Updated parameter name
-        model.compile(loss=DeepQAgent._huber_loss, optimizer=Adam(learning_rate=self.learningRate))
-        
-        print('Successfully initialized model')
+        model.compile(loss=self._huber_loss, optimizer=Adam(learning_rate=self.learningRate))
+        logger.info('Successfully initialized model')
         return model
+
+    @staticmethod
+    def _huber_loss(y_true, y_pred, clip_delta=1.0):
+        """Implementation of huber loss to use as the loss function for the model"""
+        error = y_true - y_pred
+        cond = K.abs(error) <= clip_delta
+        squared_loss = 0.5 * K.square(error)
+        quadratic_loss = 0.5 * K.square(clip_delta) + clip_delta * (K.abs(error) - clip_delta)
+        return K.mean(tf.where(cond, squared_loss, quadratic_loss))
 
     def prepareNetworkInputs(self, step):
         """Generates a feature vector from the current game state information to feed into the network"""
@@ -95,14 +194,14 @@ class DeepQAgent:
         feature_vector.append(step.get("enemy_x_position", 0))
         feature_vector.append(step.get("enemy_y_position", 0))
 
-        # one hot encode enemy state
+        # One-hot encode enemy state
         oneHotEnemyState = [0] * len(DeepQAgent.stateIndices.keys())
         enemy_status = step.get("enemy_status", 512)
         if enemy_status not in DeepQAgent.doneKeys:
             oneHotEnemyState[DeepQAgent.stateIndices[enemy_status]] = 1
         feature_vector += oneHotEnemyState
 
-        # one hot encode enemy character
+        # One-hot encode enemy character
         oneHotEnemyChar = [0] * 8
         enemy_char = step.get("enemy_character", 0)
         if enemy_char < len(oneHotEnemyChar):
@@ -114,13 +213,17 @@ class DeepQAgent:
         feature_vector.append(step.get("x_position", 0))
         feature_vector.append(step.get("y_position", 0))
 
-        # one hot encode player state
+        # One-hot encode player state
         oneHotPlayerState = [0] * len(DeepQAgent.stateIndices.keys())
         player_status = step.get("status", 512)
         if player_status not in DeepQAgent.doneKeys:
             oneHotPlayerState[DeepQAgent.stateIndices[player_status]] = 1
         feature_vector += oneHotPlayerState
 
+        # Ensure feature_vector length matches stateSize (40)
+        feature_vector = feature_vector[:self.stateSize]
+        if len(feature_vector) < self.stateSize:
+            feature_vector += [0] * (self.stateSize - len(feature_vector))
         feature_vector = np.reshape(feature_vector, [1, self.stateSize])
         return feature_vector
 
@@ -130,79 +233,44 @@ class DeepQAgent:
 
     def getRandomMove(self, info):
         """Get a random move from the available move list"""
-        moveName = random.choice(list(self.moveList)) if self.moveList else 0
-        frameInputs = self.convertMoveToFrameInputs(moveName, info)
-        return moveName.value if hasattr(moveName, 'value') else moveName, frameInputs
+        move, frameInputs = Moves.getRandomMove()
+        # Handle directional moves
+        if Moves.isDirectionalMove(move):
+            facing_right = info.get("x_position", 100) < info.get("enemy_x_position", 200)
+            frameInputs = frameInputs[0 if facing_right else 1]
+        return move.value, frameInputs
 
     def convertMoveToFrameInputs(self, move, info):
-        """Convert a move to frame inputs"""
-        # Simple implementation that maps moves to basic inputs
-        # Assuming moveList contains names that can be mapped to button presses
-        frameInputs = []
-        
-        # Generate a simple sequence based on move name
-        if hasattr(move, 'name'):
-            move_name = move.name
-        else:
-            move_name = str(move)
-        
-        # Basic mapping for demonstration
-        if 'PUNCH' in move_name:
-            frameInputs = ['X']
-        elif 'KICK' in move_name:
-            frameInputs = ['B']
-        elif 'SPECIAL' in move_name:
-            frameInputs = ['→', '↓', '↘', 'Y']
-        else:
-            # Default to a simple input if no match
-            frameInputs = [random.choice(self.ACTION_BUTTONS)]
-        
+        """Convert a move to a list of button arrays."""
+        frameInputs = Moves.getMoveInputs(move)
+        # Handle directional moves
+        if Moves.isDirectionalMove(move):
+            facing_right = info.get("x_position", 100) < info.get("enemy_x_position", 200)
+            frameInputs = frameInputs[0 if facing_right else 1]
         return frameInputs
-
 
     def getMove(self, obs, info):
         """Returns a set of button inputs generated by the Agent's network"""
         if np.random.rand() <= self.epsilon:
-            move, frameInputs = self.getRandomMove(info)
-            return move, frameInputs  # Return the full tuple
+            # Explore: choose random action
+            move_index, frameInputs = self.getRandomMove(info)
+            return move_index, frameInputs
         else:
+            # Exploit: choose best action according to model
             stateData = self.prepareNetworkInputs(info)
             predictedRewards = self.model.predict(stateData, verbose=0)[0]
             move_index = np.argmax(predictedRewards)
             move = list(self.moveList)[move_index]
             frameInputs = self.convertMoveToFrameInputs(move, info)
-            return move, frameInputs  # Return the full tuple
-    
+            return move_index, frameInputs
 
     def recordStep(self, step):
-        """Records a step with simplified reward structure"""
-        current_state = step[DeepQAgent.STATE_INDEX]
-        next_state = step[DeepQAgent.NEXT_STATE_INDEX]
-        reward = step[DeepQAgent.REWARD_INDEX]
-        action = step[DeepQAgent.ACTION_INDEX]
-        done = step[DeepQAgent.DONE_INDEX]
-
-        current_player_health = current_state.get("health", 100) if current_state else 100
-        current_enemy_health = current_state.get("enemy_health", 100) if current_state else 100
-        next_player_health = next_state.get("health", 100) if next_state else 100
-        next_enemy_health = next_state.get("enemy_health", 100) if next_state else 100
-
-        damage_dealt = max(0, current_enemy_health - next_enemy_health)
-        damage_taken = max(0, current_player_health - next_player_health)
-
-        modified_reward = reward
-        modified_reward += damage_dealt * 0.1
-        modified_reward -= damage_taken * 0.1
-        if next_enemy_health <= 0:
-            modified_reward += 10.0
-        elif next_player_health <= 0:
-            modified_reward -= 10.0
-
-        modified_step = list(step)
-        modified_step[DeepQAgent.REWARD_INDEX] = modified_reward
-        self.memory.append(modified_step)
+        """Records a step with a simple reward structure"""
+        self.memory.append(step)
+        
         if len(self.memory) > DeepQAgent.MAX_DATA_LENGTH:
             self.memory.pop(0)
+            
         self.total_timesteps += 1
 
     def trainNetwork(self, data, model):
@@ -214,12 +282,9 @@ class DeepQAgent:
         self.lossHistory.losses_clear()
         
         for state, action, reward, done, next_state in minibatch:
-            # Fix the action handling
             if isinstance(action, dict):
-                # Simpler action extraction
                 action = action.get('value', 0)
             
-            # Ensure action is within valid range
             action = min(max(0, action), self.actionSize - 1)
             
             modelOutput = model.predict(state, verbose=0)[0]
@@ -238,7 +303,6 @@ class DeepQAgent:
         if self.memory:
             data = []
             for step in self.memory:
-                # Unpack using the correct indices
                 state = self.prepareNetworkInputs(step[self.STATE_INDEX])
                 action = step[self.ACTION_INDEX]
                 reward = step[self.REWARD_INDEX]
@@ -247,8 +311,7 @@ class DeepQAgent:
                 data.append([state, action, reward, done, next_state])
             self.model = self.trainNetwork(data, self.model)
         
-        # Update target network less frequently for stability
-        if self.total_timesteps % 100 == 0:  # Changed from 8 to 100
+        if self.total_timesteps % 100 == 0:
             self.target_model.set_weights(self.model.get_weights())
         
         if self.epsilon > self.EPSILON_MIN:
@@ -264,23 +327,15 @@ class DeepQAgent:
         model_path = f"models/{self.name}Model.h5"
         if os.path.exists(model_path):
             self.model.load_weights(model_path)
-            print(f"Loaded model from {model_path}")
+            logger.info(f"Loaded model from {model_path}")
             self.target_model.set_weights(self.model.get_weights())
 
-try:
-    # For newer TensorFlow/Keras versions
-    from keras.utils import get_custom_objects
-except ImportError:
-    try:
-        # For older TensorFlow/Keras versions
-        from keras.utils.generic_utils import get_custom_objects
-    except ImportError:
-        # As a last resort, try this path
-        from tensorflow.keras.utils import get_custom_objects
+# Register custom loss function
+from tensorflow.keras.utils import get_custom_objects
 get_custom_objects().update({"_huber_loss": DeepQAgent._huber_loss})
 
 if __name__ == "__main__":
-    agent = DeepQAgent(stateSize=32, load=False)
+    agent = DeepQAgent(stateSize=40)
     for episode in range(10):
         agent.prepareForNextFight()
         for step in range(100):
