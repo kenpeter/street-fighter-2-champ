@@ -7,7 +7,7 @@ from enum import Enum
 import tensorflow as tf
 from tqdm import tqdm
 import logging
-from myagent import DeepQAgent, Moves
+from DeepQAgent import DeepQAgent, Moves
 
 # Configure logging
 logging.basicConfig(
@@ -50,14 +50,6 @@ class Lobby_Modes(Enum):
 
 class Lobby:
     NO_ACTION = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-    MOVEMENT_BUTTONS = ["LEFT", "RIGHT", "DOWN", "UP"]
-    ACTION_BUTTONS = ["X", "Y", "Z", "A", "B", "C"]
-    ROUND_TIMER_NOT_STARTED = 39208
-    STANDING_STATUS = 512
-    CROUCHING_STATUS = 514
-    JUMPING_STATUS = 516
-    ACTIONABLE_STATUSES = [STANDING_STATUS, CROUCHING_STATUS, JUMPING_STATUS]
-    JUMP_LAG = 4
     FRAME_RATE = 1 / 300
 
     @staticmethod
@@ -234,7 +226,6 @@ class Lobby:
             logger.info(f"Info keys after RAM reading: {list(self.lastInfo.keys())}")
             
             self.lastAction, self.frameInputs = 0, [Lobby.NO_ACTION]
-            self.currentJumpFrame = 0
             self.episode_steps = 0
             self.episode_reward = 0
             self.initial_health = self.lastInfo.get("health", 100)
@@ -257,7 +248,6 @@ class Lobby:
 
     def clearLobby(self):
         self.players = [None] * self.mode.value
-
 
     def monitor_game_state(self, info, step_count):
         terminal_states = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
@@ -421,12 +411,12 @@ class Lobby:
             "enemy_x_position": 200,
             "enemy_y_position": 0,
             "enemy_matches_won": 0,
-            "enemy_status": Lobby.STANDING_STATUS,
+            "enemy_status": 512,
             "enemy_character": 0,
             "health": 100,
             "x_position": 100,
             "y_position": 0,
-            "status": Lobby.STANDING_STATUS,
+            "status": 512,
             "matches_won": 0,
             "score": 0,
         }
@@ -697,12 +687,13 @@ if __name__ == "__main__":
         logger.info("Creating default state...")
         create_default_state()
         
+    lobby = Lobby(render=args.render)
     agent = DeepQAgent(
         stateSize=40,
         resume=args.resume,
         name=args.name,
+        lobby=lobby,  # Pass Lobby instance
     )
     
-    lobby = Lobby(render=args.render)
     lobby.addPlayer(agent)
     lobby.executeTrainingRun(episodes=args.episodes)
