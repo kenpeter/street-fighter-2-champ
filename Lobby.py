@@ -425,9 +425,17 @@ class Lobby:
                 info[key] = default_value
         return info
 
+    # this is the main reward func
     def enterFrameInputs(self):
         self.lastReward = 0
         start_time = time.time()
+        
+        # Store the initial state values for reward calculation
+        initial_state = {
+            "health": self.lastInfo.get("health", 100),
+            "enemy_health": self.lastInfo.get("enemy_health", 100),
+        }
+        
         for frame in self.frameInputs:
             step_result = self.environment.step(frame)
             if len(step_result) == 4:
@@ -438,7 +446,30 @@ class Lobby:
                     
             info = self.read_ram_values(info)
             
-            self.lastReward += tempReward
+            # Calculate custom rewards based on changes from initial state to current state
+            # Reward for damage dealt to opponent
+            damage_dealt = max(0, initial_state["enemy_health"] - info.get("enemy_health", 100))
+            damage_reward = damage_dealt * 0.3  # Scale factor can be tuned
+            
+            # Penalty for damage taken
+            damage_taken = max(0, initial_state["health"] - info.get("health", 100))
+            defense_reward = -damage_taken * 0.15  # Slightly higher penalty for taking damage
+            
+            # Small reward for health advantage
+            health_diff = info.get("health", 100) - info.get("enemy_health", 100)
+            health_diff_reward = health_diff * 0.01  # Small reward for health advantage
+            
+            # Combine all reward components
+            custom_reward = damage_reward + defense_reward + health_diff_reward
+            
+            # Add significant win/loss rewards
+            if info.get("enemy_health", 100) <= 0:  # Win condition
+                custom_reward += 20.0  # Large positive reward for winning
+            elif info.get("health", 100) <= 0:  # Loss condition
+                custom_reward -= 15.0  # Large negative reward for losing
+                
+            # Add custom reward to environment reward
+            self.lastReward += tempReward + custom_reward
             
             if info.get("health", 100) <= 0 or info.get("enemy_health", 100) <= 0:
                 self.done = True
@@ -449,6 +480,7 @@ class Lobby:
             if self.done:
                 frame_time = (time.time() - start_time) * 1000  # ms
                 logger.debug(f"Frame processing time: {frame_time:.2f}ms")
+                logger.debug(f"Final reward: {self.lastReward} (includes custom reward: {custom_reward})")
                 return info, obs
                     
             if self.render:
@@ -458,6 +490,7 @@ class Lobby:
         frame_time = (time.time() - start_time) * 1000  # ms
         logger.debug(f"Frame processing time: {frame_time:.2f}ms")
         return info, obs
+
 
     # we speicify episode, then pass donw here
     def executeTrainingRun(self, review=True, episodes=1):
