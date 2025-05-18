@@ -431,36 +431,12 @@ class DeepQAgent:
         if self.total_timesteps % 100 == 0:
             self.target_model.set_weights(self.model.get_weights())
         
-        # Adjust epsilon based on recent win rate
-        self.adjustEpsilonAfterFight()
-        
         # Save model after every fight
         self.saveModel()
         logger.info("Model saved after fight")
         
         # Save stats after epsilon adjustment
         self.saveStats()
-
-    # if win rate too low, be creative
-    def adjustEpsilonAfterFight(self):
-        # get total game from stat json
-        if self.lobby and hasattr(self.lobby, 'training_stats'):
-            wins = self.lobby.training_stats.get("wins", 0)
-            losses = self.lobby.training_stats.get("losses", 0)
-        else:
-            wins = self.stats.get("wins", 0)
-            losses = self.stats.get("losses", 0)
-        
-        # total games from prev
-        total_games = wins + losses
-
-        # win rate
-        win_rate = wins / total_games
-
-        if win_rate < self.WIN_RATE_THRESHOLD:
-            self.epsilon = 0.9
-        else:
-            self.epsilon *= self.epsilonDecay
 
     # save model
     def saveModel(self):
