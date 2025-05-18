@@ -340,26 +340,6 @@ class Lobby:
                     logger.info(
                         f"Step {step_count}, Player health: {info['health']}, Enemy health: {info['enemy_health']}"
                     )
-                    
-            if self.done and step_count < max_steps:
-                logger.warning("\n===== GAME CLOSED UNEXPECTEDLY =====")
-                logger.warning(f"Steps completed: {step_count}/{max_steps}")
-                logger.warning(
-                    f"Last known player health: {self.lastInfo.get('health', 'Unknown')}"
-                )
-                logger.warning(
-                    f"Last known enemy health: {self.lastInfo.get('enemy_health', 'Unknown')}"
-                )
-                logger.warning(
-                    f"Last known player status: {self.lastInfo.get('status', 'Unknown')}"
-                )
-                logger.warning(
-                    f"Last known enemy status: {self.lastInfo.get('enemy_status', 'Unknown')}"
-                )
-                logger.warning("\nState history before closure:")
-                for i, state in enumerate(last_states):
-                    logger.warning(f"  State {i+1}: {state}")
-                logger.warning("==============================\n")
                 
             self.training_stats["episodes_run"] += 1
             self.training_stats["episode_rewards"].append(self.episode_reward)

@@ -251,7 +251,6 @@ class DeepQAgent:
         try:
             with open(stats_path, 'w') as f:
                 json.dump(self.stats, f, indent=2)
-            logger.info(f"Saved stats to {stats_path}: {self.stats}")
         except Exception as e:
             logger.error(f"Error saving stats to {stats_path}: {e}")
 
