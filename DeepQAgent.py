@@ -339,6 +339,7 @@ class DeepQAgent:
             logger.debug(f"Predicted move selected in {move_time:.2f}ms")
             return move_index, frameInputs
 
+    # 
     def recordStep(self, step):
         """Records a step with a simple reward structure"""
         self.memory.append(step)

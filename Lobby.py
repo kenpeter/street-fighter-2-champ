@@ -75,11 +75,9 @@ class Lobby:
     def __init__(
         self,
         game="StreetFighterIISpecialChampionEdition-Genesis",
-        render=False,
         mode=Lobby_Modes.SINGLE_PLAYER,
     ):
         self.game = game
-        self.render = render
         self.mode = mode
         self.clearLobby()
         self.environment = None
@@ -323,6 +321,7 @@ class Lobby:
                         
                 self.episode_reward += self.lastReward
                 
+                # when we play, we push last obs, state, action, reward, curr obs, into mem
                 self.players[0].recordStep(
                     (
                         self.lastObservation,
@@ -483,10 +482,6 @@ class Lobby:
                 logger.debug(f"Final reward: {self.lastReward} (includes custom reward: {custom_reward})")
                 return info, obs
                     
-            if self.render:
-                self.environment.render()
-                # Removed time.sleep to avoid artificial delays
-                    
         frame_time = (time.time() - start_time) * 1000  # ms
         logger.debug(f"Frame processing time: {frame_time:.2f}ms")
         return info, obs
@@ -518,6 +513,8 @@ class Lobby:
             self.episode_steps = 0
             self.episode_reward = 0
             
+            # we load the state file, fight each enemy, then we play (inject all info into mem)
+            # finish play, we review it (train it)
             for state in states:
                 logger.info(f"Loading state: {state}")
                 try:
@@ -676,12 +673,6 @@ if __name__ == "__main__":
         description="Run the Street Fighter II AI training lobby with CUDA support"
     )
     parser.add_argument(
-        "-r",
-        "--render",
-        action="store_true",
-        help="Boolean flag for if the user wants the game environment to render during play",
-    )
-    parser.add_argument(
         "-e",
         "--episodes",
         type=int,
@@ -703,7 +694,7 @@ if __name__ == "__main__":
         create_default_state()
     
     # Always use GPU if available and always show progress
-    lobby = Lobby(render=args.render)
+    lobby = Lobby()
     agent = DeepQAgent(
         stateSize=40,
         resume=args.resume,
