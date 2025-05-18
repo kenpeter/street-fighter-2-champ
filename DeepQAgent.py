@@ -476,7 +476,6 @@ class DeepQAgent:
 from tensorflow.keras.utils import get_custom_objects
 get_custom_objects().update({"_huber_loss": DeepQAgent._huber_loss})
 
-if __name__ == "__main__":
     # agent
     agent = DeepQAgent(stateSize=40)
     # 10 episode

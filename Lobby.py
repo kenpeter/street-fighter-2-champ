@@ -459,6 +459,7 @@ class Lobby:
         logger.debug(f"Frame processing time: {frame_time:.2f}ms")
         return info, obs
 
+    # we speicify episode, then pass donw here
     def executeTrainingRun(self, review=True, episodes=1):
         start_time = time.time()
         self.training_stats["session_wins"] = 0
