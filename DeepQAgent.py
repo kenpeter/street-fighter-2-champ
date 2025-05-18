@@ -2,7 +2,7 @@ import numpy as np
 import random
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Input
+from tensorflow.keras.layers import Dense, Input, BatchNormalization, Dropout
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import backend as K
 import os
@@ -151,7 +151,7 @@ class DeepQAgent:
     # 1032 victory state
     doneKeys = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
 
-    def __init__(self, stateSize=60, resume=False, epsilon=None, name=None, moveList=Moves, lobby=None):
+    def __init__(self, stateSize=60, resume=False, epsilon=1.0, name=None, moveList=Moves, lobby=None):
         """Initializes the agent and the underlying neural network"""
         self.name = name or self.__class__.__name__
         self.moveList = moveList
@@ -196,20 +196,25 @@ class DeepQAgent:
         self.target_model.set_weights(self.model.get_weights())
 
     def initializeNetwork(self):
-        """Initializes a Neural Net for a Deep-Q learning Model"""
+        """Initializes a Neural Net for Deep-Q learning with improved architecture"""
         model = Sequential([
             Input(shape=(self.stateSize,)),
-            Dense(256, activation='relu'),
-            Dense(256, activation='relu'),
             Dense(512, activation='relu'),
+            BatchNormalization(),
+            Dropout(0.2),
+            Dense(384, activation='relu'),
+            BatchNormalization(),
+            Dropout(0.2),
             Dense(256, activation='relu'),
-            Dense(256, activation='relu'),
+            BatchNormalization(),
+            Dense(128, activation='relu'),
             Dense(self.actionSize, activation='linear')
         ])
         
         model.compile(loss=self._huber_loss, optimizer=Adam(learning_rate=self.learningRate))
         logger.info('Successfully initialized model')
         return model
+
 
     @staticmethod
     def _huber_loss(y_true, y_pred, clip_delta=1.0):
@@ -260,56 +265,73 @@ class DeepQAgent:
         except Exception as e:
             logger.error(f"Error saving stats to {stats_path}: {e}")
 
+    
     def prepareNetworkInputs(self, step):
         feature_vector = []
         
-        # Enemy Data
-        feature_vector.append(step.get("enemy_health", 100))
-        feature_vector.append(step.get("enemy_x_position", 0))
-        feature_vector.append(step.get("enemy_y_position", 0))
-        # Add enemy matches won
-        feature_vector.append(step.get("enemy_matches_won", 0))
+        # Normalize health values to [0,1] range
+        max_health = 100.0  # Assuming max health is 100
         
-        # One-hot encode enemy state
+        # Enemy Data with normalization
+        feature_vector.append(step.get("enemy_health", 100) / max_health)  # Normalize to [0,1]
+        
+        # Normalize positions based on game screen dimensions
+        screen_width = 400.0  # Adjust to your game's dimensions
+        screen_height = 240.0  # Adjust to your game's dimensions
+        
+        feature_vector.append(step.get("enemy_x_position", 0) / screen_width)  # Normalize to [0,1]
+        feature_vector.append(step.get("enemy_y_position", 0) / screen_height)  # Normalize to [0,1]
+        
+        # Normalize match count (assuming max is 3 or 5 matches)
+        max_matches = 1.0
+        feature_vector.append(step.get("enemy_matches_won", 0) / max_matches)
+        
+        # One-hot encode enemy state (already normalized by design)
         oneHotEnemyState = [0] * len(DeepQAgent.stateIndices.keys())
         enemy_status = step.get("enemy_status", 512)
         if enemy_status not in DeepQAgent.doneKeys:
             oneHotEnemyState[DeepQAgent.stateIndices[enemy_status]] = 1
         feature_vector += oneHotEnemyState
         
-        # One-hot encode enemy character
+        # One-hot encode enemy character (already normalized by design)
         oneHotEnemyChar = [0] * 8
         enemy_char = step.get("enemy_character", 0)
         if enemy_char < len(oneHotEnemyChar):
             oneHotEnemyChar[enemy_char] = 1
         feature_vector += oneHotEnemyChar
         
-        # Player Data
-        feature_vector.append(step.get("health", 100))
-        feature_vector.append(step.get("x_position", 0))
-        feature_vector.append(step.get("y_position", 0))
-        # Add player matches won
-        feature_vector.append(step.get("matches_won", 0))
-        # Add current score
-        feature_vector.append(step.get("score", 0))
+        # Player Data with normalization
+        feature_vector.append(step.get("health", 100) / max_health)  # Normalize to [0,1]
+        feature_vector.append(step.get("x_position", 0) / screen_width)  # Normalize to [0,1]
+        feature_vector.append(step.get("y_position", 0) / screen_height)  # Normalize to [0,1]
         
-        # One-hot encode player state
+        # Normalize player matches won
+        feature_vector.append(step.get("matches_won", 0) / max_matches)
+        
+        # Normalize score - this requires knowing the typical score range
+        # If scores typically range from 0 to 10000, for example:
+        max_score = 100000.0
+        feature_vector.append(step.get("score", 0) / max_score)
+        
+        # One-hot encode player state (already normalized by design)
         oneHotPlayerState = [0] * len(DeepQAgent.stateIndices.keys())
         player_status = step.get("status", 512)
         if player_status not in DeepQAgent.doneKeys:
             oneHotPlayerState[DeepQAgent.stateIndices[player_status]] = 1
         feature_vector += oneHotPlayerState
         
-        # Calculate relative distance between players (this is often more useful than absolute positions)
+        # Calculate and normalize relative distance
         player_x = step.get("x_position", 0)
         enemy_x = step.get("enemy_x_position", 0)
         x_distance = enemy_x - player_x
-        feature_vector.append(x_distance)
+        # Normalize distance - max distance could be screen width
+        feature_vector.append(x_distance / screen_width)
         
         # Ensure feature_vector length matches stateSize
         feature_vector = feature_vector[:self.stateSize]
         if len(feature_vector) < self.stateSize:
             feature_vector += [0] * (self.stateSize - len(feature_vector))
+        
         feature_vector = np.reshape(feature_vector, [1, self.stateSize])
         return feature_vector
 
