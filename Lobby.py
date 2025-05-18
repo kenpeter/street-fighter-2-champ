@@ -634,7 +634,7 @@ if __name__ == "__main__":
     # Always use GPU if available and always show progress
     lobby = Lobby()
     agent = DeepQAgent(
-        stateSize=40,
+        stateSize=60,
         resume=args.resume,
         lobby=lobby,
     )

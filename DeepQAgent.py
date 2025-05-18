@@ -275,46 +275,58 @@ class DeepQAgent:
             logger.error(f"Error saving stats to {stats_path}: {e}")
 
     def prepareNetworkInputs(self, step):
-        """Generates a feature vector from the current game state information to feed into the network"""
         feature_vector = []
         
         # Enemy Data
         feature_vector.append(step.get("enemy_health", 100))
         feature_vector.append(step.get("enemy_x_position", 0))
         feature_vector.append(step.get("enemy_y_position", 0))
-
+        # Add enemy matches won
+        feature_vector.append(step.get("enemy_matches_won", 0))
+        
         # One-hot encode enemy state
         oneHotEnemyState = [0] * len(DeepQAgent.stateIndices.keys())
         enemy_status = step.get("enemy_status", 512)
         if enemy_status not in DeepQAgent.doneKeys:
             oneHotEnemyState[DeepQAgent.stateIndices[enemy_status]] = 1
         feature_vector += oneHotEnemyState
-
+        
         # One-hot encode enemy character
         oneHotEnemyChar = [0] * 8
         enemy_char = step.get("enemy_character", 0)
         if enemy_char < len(oneHotEnemyChar):
             oneHotEnemyChar[enemy_char] = 1
         feature_vector += oneHotEnemyChar
-
+        
         # Player Data
         feature_vector.append(step.get("health", 100))
         feature_vector.append(step.get("x_position", 0))
         feature_vector.append(step.get("y_position", 0))
-
+        # Add player matches won
+        feature_vector.append(step.get("matches_won", 0))
+        # Add current score
+        feature_vector.append(step.get("score", 0))
+        
         # One-hot encode player state
         oneHotPlayerState = [0] * len(DeepQAgent.stateIndices.keys())
         player_status = step.get("status", 512)
         if player_status not in DeepQAgent.doneKeys:
             oneHotPlayerState[DeepQAgent.stateIndices[player_status]] = 1
         feature_vector += oneHotPlayerState
-
-        # Ensure feature_vector length matches stateSize (40)
+        
+        # Calculate relative distance between players (this is often more useful than absolute positions)
+        player_x = step.get("x_position", 0)
+        enemy_x = step.get("enemy_x_position", 0)
+        x_distance = enemy_x - player_x
+        feature_vector.append(x_distance)
+        
+        # Ensure feature_vector length matches stateSize
         feature_vector = feature_vector[:self.stateSize]
         if len(feature_vector) < self.stateSize:
             feature_vector += [0] * (self.stateSize - len(feature_vector))
         feature_vector = np.reshape(feature_vector, [1, self.stateSize])
         return feature_vector
+
 
     def prepareForNextFight(self):
         """Reset memory for a new fight"""
