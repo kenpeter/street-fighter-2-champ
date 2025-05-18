@@ -489,6 +489,10 @@ class Lobby:
             f"Total Win/Loss Record: {self.training_stats['wins']}W - {self.training_stats['losses']}L ({win_rate:.2f}%)"
         )
         
+        # Display current epsilon value being used by the agent
+        if hasattr(self.players[0], "epsilon"):
+            logger.info(f"Current epsilon value: {self.players[0].epsilon:.4f}")
+        
         session_win_rate = (
             (
                 self.training_stats["session_wins"]
@@ -623,12 +627,12 @@ if __name__ == "__main__":
         action="store_true",
         help="Boolean flag for loading a pre-existing model and stats with higher exploration for continued training",
     )
-    # Add the new epsilon parameter
+    # Keep the epsilon parameter but update its description
     parser.add_argument(
         "--epsilon",
         type=float,
         default=1.0,
-        help="Initial exploration rate (epsilon) for the agent (between 0.0 and 1.0)",
+        help="Exploration rate (epsilon) for the agent (between 0.0 and 1.0) - value will be fixed for the entire training session",
     )
     args = parser.parse_args()
     

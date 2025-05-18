@@ -121,7 +121,6 @@ class DeepQAgent:
     NEXT_STATE_INDEX = 5
     DONE_INDEX = 6
     MAX_DATA_LENGTH = 10000
-    DEFAULT_EPSILON_DECAY = 0.99995
     DEFAULT_DISCOUNT_RATE = 0.98
     DEFAULT_LEARNING_RATE = 0.0003
     WIN_RATE_WINDOW = 10
@@ -151,7 +150,7 @@ class DeepQAgent:
     # 1032 victory state
     doneKeys = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
 
-    def __init__(self, stateSize=60, resume=False, epsilon=None, name=None, moveList=Moves, lobby=None):
+    def __init__(self, stateSize=60, resume=False, epsilon=1.0, name=None, moveList=Moves, lobby=None):
         """Initializes the agent and the underlying neural network"""
         self.name = name or self.__class__.__name__
         self.moveList = moveList
@@ -159,26 +158,20 @@ class DeepQAgent:
         self.actionSize = len(moveList)
         self.gamma = DeepQAgent.DEFAULT_DISCOUNT_RATE
         self.lobby = lobby  # Reference to Lobby instance for training_stats
-        self.epsilonDecay = DeepQAgent.DEFAULT_EPSILON_DECAY
         self.learningRate = DeepQAgent.DEFAULT_LEARNING_RATE
         self.resume = resume
         self.memory = []
         self.model = self.initializeNetwork()
         
         # init epsilon
-        self.stats = {"epsilon": epsilon, "total_timesteps": 0, "wins": 0, "losses": 0}
+        self.epsilon = epsilon
+        self.stats = {"total_timesteps": 0, "wins": 0, "losses": 0}
         
         # Load stats in resume mode
         if resume:
             self.loadModel()
             self.loadStats()
-        
-        # get epsilon from stat and use it
-        if epsilon == None:
-            self.epsilon = self.stats["epsilon"]
-        else:
-            self.epsilon = epsilon
-
+            
         self.total_timesteps = self.stats["total_timesteps"]
         
         # Update lobby stats if available
@@ -257,7 +250,6 @@ class DeepQAgent:
             losses = self.stats.get("losses", 0)
         
         self.stats.update({
-            "epsilon": self.epsilon,
             "total_timesteps": self.total_timesteps,
             "wins": wins,
             "losses": losses
@@ -439,7 +431,7 @@ class DeepQAgent:
         self.saveModel()
         logger.info("Model saved after fight")
         
-        # Save stats after epsilon adjustment
+        # Save stats after each fight, but don't update epsilon
         self.saveStats()
 
     # save model
