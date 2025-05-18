@@ -623,6 +623,13 @@ if __name__ == "__main__":
         action="store_true",
         help="Boolean flag for loading a pre-existing model and stats with higher exploration for continued training",
     )
+    # Add the new epsilon parameter
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        default=1.0,
+        help="Initial exploration rate (epsilon) for the agent (between 0.0 and 1.0)",
+    )
     args = parser.parse_args()
     
     # Always create a default state if needed
@@ -637,6 +644,7 @@ if __name__ == "__main__":
         stateSize=60,
         resume=args.resume,
         lobby=lobby,
+        epsilon=args.epsilon,  # Pass the epsilon parameter to the agent
     )
     
     lobby.addPlayer(agent)

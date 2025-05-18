@@ -151,7 +151,7 @@ class DeepQAgent:
     # 1032 victory state
     doneKeys = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
 
-    def __init__(self, stateSize=60, resume=False, epsilon=1.0, name=None, moveList=Moves, lobby=None):
+    def __init__(self, stateSize=60, resume=False, epsilon=None, name=None, moveList=Moves, lobby=None):
         """Initializes the agent and the underlying neural network"""
         self.name = name or self.__class__.__name__
         self.moveList = moveList
@@ -174,7 +174,11 @@ class DeepQAgent:
             self.loadStats()
         
         # get epsilon from stat and use it
-        self.epsilon = self.stats["epsilon"]
+        if epsilon == None:
+            self.epsilon = self.stats["epsilon"]
+        else:
+            self.epsilon = epsilon
+
         self.total_timesteps = self.stats["total_timesteps"]
         
         # Update lobby stats if available

@@ -15,7 +15,7 @@ python -m retro.import .
 
 
 
-python Lobby.py --episodes 1 --resume
+python Lobby.py --episodes 1 
 
 
 
