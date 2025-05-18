@@ -247,46 +247,12 @@ class Lobby:
     def clearLobby(self):
         self.players = [None] * self.mode.value
 
-    def monitor_game_state(self, info, step_count):
-        terminal_states = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
-        
-        state_log = {
-            "step": step_count,
-            "health": info.get("health", -1),
-            "enemy_health": info.get("enemy_health", -1),
-            "status": info.get("status", -1),
-            "enemy_status": info.get("enemy_status", -1),
-            "x_position": info.get("x_position", -1),
-            "enemy_x_position": info.get("enemy_x_position", -1),
-            "done_flag": self.done,
-        }
-        
-        if info.get("status", 0) in terminal_states:
-            logger.warning(f"WARNING: Player in terminal state: {info['status']}")
-        if info.get("enemy_status", 0) in terminal_states:
-            logger.warning(f"WARNING: Enemy in terminal state: {info['enemy_status']}")
-        if info.get("health", 100) <= 0:
-            logger.warning(f"ALERT: Player health is zero or negative: {info['health']}")
-        if info.get("enemy_health", 100) <= 0:
-            logger.warning(f"ALERT: Enemy health is zero or negative: {info['enemy_health']}")
-            
-        unusual_event = (
-            info.get("health", 100) <= 20
-            or info.get("enemy_health", 100) <= 20
-            or info.get("status", 0) in terminal_states
-            or info.get("enemy_status", 0) in terminal_states
-        )
-        if step_count % 100 == 0 or unusual_event:
-            logger.info(f"STATE LOG [{step_count}]: {state_log}")
-            
-        return state_log
-
+    # we play put into mem, then train
     def play(self, state):
         try:
             self.initEnvironment(state)
             max_steps = 2500
             step_count = 0
-            last_states = []
             
             while not self.done and step_count < max_steps:
                 step_count += 1
@@ -312,12 +278,6 @@ class Lobby:
                     logger.error(f"Last known state before error: {self.lastInfo}")
                     self.done = True
                     break
-                    
-                state_log = self.monitor_game_state(info, step_count)
-                if state_log:
-                    last_states.append(state_log)
-                    if len(last_states) > 5:
-                        last_states.pop(0)
                         
                 self.episode_reward += self.lastReward
                 
@@ -336,10 +296,6 @@ class Lobby:
                 
                 self.lastObservation, self.lastInfo = obs, info
                 
-                if step_count % 100 == 0:
-                    logger.info(
-                        f"Step {step_count}, Player health: {info['health']}, Enemy health: {info['enemy_health']}"
-                    )
                 
             self.training_stats["episodes_run"] += 1
             self.training_stats["episode_rewards"].append(self.episode_reward)
@@ -467,13 +423,14 @@ class Lobby:
         return info, obs
 
 
-    # we speicify episode, then pass donw here
+    # we speicify episode, then pass down here
     def executeTrainingRun(self, review=True, episodes=1):
         start_time = time.time()
         self.training_stats["session_wins"] = 0
         self.training_stats["session_losses"] = 0
         self.training_stats["session_start_time"] = time.time()
 
+        # total episode
         for episodeNumber in tqdm(range(episodes), desc="Training Episodes"):
             logger.info(f"\n=== Starting episode {episodeNumber+1}/{episodes} ===")
             
@@ -498,6 +455,7 @@ class Lobby:
             for state in states:
                 logger.info(f"Loading state: {state}")
                 try:
+                    # we play then train
                     self.play(state=state)
                     
                     if review and self.players[0].__class__.__name__ != "Agent":
@@ -682,4 +640,5 @@ if __name__ == "__main__":
     )
     
     lobby.addPlayer(agent)
+    # this is training run
     lobby.executeTrainingRun(episodes=args.episodes)

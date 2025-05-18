@@ -132,7 +132,27 @@ class DeepQAgent:
     # Default higher epsilon for better exploration
     DEFAULT_EPSILON = 0.8
 
+    # agent
+    # 512 standing
+    # 514 forward
+    # 516 backward
+    # 518 crounch
+    # 520 jump up
+    # 522 jump forward
+    # 524 jump backward
+    # 526 attack animation
+    # 532 special move animation
     stateIndices = {512: 0, 514: 1, 516: 2, 518: 3, 520: 4, 522: 5, 524: 6, 526: 7, 532: 8}
+
+    # enemy
+    # 0 inactive
+    # 528 knock down
+    # 530 recover
+    # 1024 stun
+    # 1026 heavy be hit reaction
+    # 1028 special move be hit reaction
+    # 1030 throw
+    # 1032 victory state
     doneKeys = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
 
     def __init__(self, stateSize=40, resume=False, epsilon=None, name=None, moveList=Moves, lobby=None):
