@@ -373,6 +373,7 @@ class DeepQAgent:
         
         return model
 
+    # what is review fight
     def reviewFight(self):
         """Review and learn from the previous fight, then save the model"""
         if self.memory:
@@ -399,6 +400,7 @@ class DeepQAgent:
         # Save stats after epsilon adjustment
         self.saveStats()
 
+    # if win rate too low, be creative
     def adjustEpsilonAfterFight(self):
         """Simplified epsilon adjustment based on win rate"""
         # Get wins and losses
@@ -435,6 +437,7 @@ class DeepQAgent:
             elif self.epsilon > self.EPSILON_MIN:
                 self.epsilon *= self.epsilonDecay
 
+    # save model
     def saveModel(self):
         """Save model weights to file with correct filename format"""
         try:
@@ -463,6 +466,7 @@ class DeepQAgent:
             import traceback
             logger.error(traceback.format_exc())
 
+    # just load model
     def loadModel(self):
         """Load model weights from file if available"""
         model_path = f"models/{self.name}Model.h5"

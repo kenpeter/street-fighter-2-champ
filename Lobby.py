@@ -689,48 +689,24 @@ if __name__ == "__main__":
         help="Integer representing the number of training rounds to go through, checkpoints are made at the end of each episode",
     )
     parser.add_argument(
-        "-n",
-        "--name",
-        type=str,
-        default=None,
-        help="Name of the instance that will be used when saving the model or its training logs",
-    )
-    parser.add_argument(
         "-re",
         "--resume",
         action="store_true",
         help="Boolean flag for loading a pre-existing model and stats with higher exploration for continued training",
     )
-    parser.add_argument(
-        "--create-state",
-        action="store_true",
-        help="Create a default state before running",
-    )
-    parser.add_argument(
-        "--disable-gpu",
-        action="store_true",
-        help="Disable GPU usage even if available",
-    )
-    parser.add_argument(
-        "--show-progress",
-        action="store_true",
-        help="Show more detailed progress during training",
-    )
     args = parser.parse_args()
     
-    if args.disable_gpu and len(physical_devices) > 0:
-        logger.info("GPU usage manually disabled")
-        tf.config.set_visible_devices([], "GPU")
-        
-    if args.create_state:
-        logger.info("Creating default state...")
+    # Always create a default state if needed
+    states = Lobby.getStates()
+    if not states:
+        logger.info("No state files found. Creating a default state...")
         create_default_state()
-        
+    
+    # Always use GPU if available and always show progress
     lobby = Lobby(render=args.render)
     agent = DeepQAgent(
         stateSize=40,
         resume=args.resume,
-        name=args.name,
         lobby=lobby,
     )
     
