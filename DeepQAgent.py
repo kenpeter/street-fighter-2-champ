@@ -137,7 +137,7 @@ class DeepQAgent:
     # 526 attack animation
     # 532 special move animation
     stateIndices = {512: 0, 514: 1, 516: 2, 518: 3, 520: 4, 522: 5, 524: 6, 526: 7, 532: 8}
-
+    
     # enemy
     # 0 inactive
     # 528 knock down
@@ -156,36 +156,29 @@ class DeepQAgent:
         self.stateSize = stateSize
         self.actionSize = len(moveList)
         self.gamma = DeepQAgent.DEFAULT_DISCOUNT_RATE
-        self.lobby = lobby  # Reference to Lobby instance for training_stats
+        self.lobby = lobby
         self.learningRate = rl
         self.resume = resume
         self.memory = []
         self.model = self.initializeNetwork()
         
-        # init epsilon
         self.epsilon = epsilon
         self.stats = {"total_timesteps": 0, "wins": 0, "losses": 0}
         
-        # Load stats in resume mode
         if resume:
             self.loadModel()
             self.loadStats()
-
+        
         self.total_timesteps = self.stats["total_timesteps"]
         
-        # Update lobby stats if available
         if self.lobby and hasattr(self.lobby, 'training_stats'):
-            # Initialize lobby stats if necessary
             if not self.lobby.training_stats:
                 self.lobby.training_stats = {}
-            
-            # Ensure wins and losses are present in lobby stats
             if "wins" not in self.lobby.training_stats:
                 self.lobby.training_stats["wins"] = self.stats.get("wins", 0)
             if "losses" not in self.lobby.training_stats:
                 self.lobby.training_stats["losses"] = self.stats.get("losses", 0)
         
-        # init we save stat
         self.saveStats()
         
         self.target_model = self.initializeNetwork()
@@ -193,10 +186,7 @@ class DeepQAgent:
 
     def initializeNetwork(self):
         """Initializes a Neural Net with Dueling DQN architecture for improved performance"""
-        # Input layer
         input_layer = Input(shape=(self.stateSize,))
-        
-        # Shared feature layers
         shared = Dense(512, activation='relu')(input_layer)
         shared = BatchNormalization()(shared)
         shared = Dropout(0.2)(shared)
@@ -204,31 +194,24 @@ class DeepQAgent:
         shared = BatchNormalization()(shared)
         shared = Dropout(0.2)(shared)
         
-        # curr state good or bad
         value_stream = Dense(256, activation='relu')(shared)
         value_stream = BatchNormalization()(value_stream)
         value_stream = Dense(128, activation='relu')(value_stream)
-        value_stream = Dense(1)(value_stream)  # Single value output
+        value_stream = Dense(1)(value_stream)
         
-        # what action is the best in this state
         advantage_stream = Dense(256, activation='relu')(shared)
         advantage_stream = BatchNormalization()(advantage_stream)
         advantage_stream = Dense(128, activation='relu')(advantage_stream)
-        advantage_stream = Dense(self.actionSize)(advantage_stream)  # One output per action
+        advantage_stream = Dense(self.actionSize)(advantage_stream)
         
-        # Combine value and advantage streams using the dueling architecture formula
-        # Q(s,a) = V(s) + (A(s,a) - mean(A(s,a)))
         advantage_mean = Lambda(lambda x: K.mean(x, axis=1, keepdims=True))(advantage_stream)
         advantage_centered = Subtract()([advantage_stream, advantage_mean])
         q_values = Add()([value_stream, advantage_centered])
         
-        # Create and compile model
         model = Model(inputs=input_layer, outputs=q_values)
         model.compile(loss=self._huber_loss, optimizer=Adam(learning_rate=self.learningRate))
-        
         logger.info('Successfully initialized Dueling DQN model')
         return model
-
 
     @staticmethod
     def _huber_loss(y_true, y_pred, clip_delta=1.0):
@@ -245,20 +228,24 @@ class DeepQAgent:
         if os.path.exists(stats_path):
             try:
                 with open(stats_path, 'r') as f:
-                    self.stats = json.load(f)
-                self.total_timesteps = self.stats.get("total_timesteps", 0)
+                    loaded_stats = json.load(f)
+                    self.stats.update(loaded_stats)
+                    if "total_timesteps" not in self.stats:
+                        self.stats["total_timesteps"] = 0
                 logger.info(f"Loaded stats from {stats_path}: {self.stats}")
             except Exception as e:
                 logger.error(f"Error loading stats from {stats_path}: {e}")
+                self.stats = {"total_timesteps": 0, "wins": 0, "losses": 0}
         else:
             logger.info(f"No stats file found at {stats_path}. Using default stats.")
+            self.stats = {"total_timesteps": 0, "wins": 0, "losses": 0}
+        self.total_timesteps = self.stats["total_timesteps"]
 
     def saveStats(self):
         """Save stats to file"""
         os.makedirs("stats", exist_ok=True)
         stats_path = f"stats/{self.name}_stats.json"
         
-        # Update wins/losses from lobby if available
         if self.lobby and hasattr(self.lobby, 'training_stats'):
             wins = self.lobby.training_stats.get("wins", 0)
             losses = self.lobby.training_stats.get("losses", 0)
@@ -278,76 +265,54 @@ class DeepQAgent:
         except Exception as e:
             logger.error(f"Error saving stats to {stats_path}: {e}")
 
-    
     def prepareNetworkInputs(self, step):
         feature_vector = []
-        
-        # Normalize health values to [0,1] range
-        max_health = 100.0  # Assuming max health is 100
-        
-        # Enemy Data with normalization
-        feature_vector.append(step.get("enemy_health", 100) / max_health)  # Normalize to [0,1]
-        
-        # Normalize positions based on game screen dimensions
-        screen_width = 263.0  # Adjust to your game's dimensions
-        screen_height = 240.0  # Adjust to your game's dimensions
-        
-        feature_vector.append(step.get("enemy_x_position", 0) / screen_width)  # Normalize to [0,1]
-        feature_vector.append(step.get("enemy_y_position", 0) / screen_height)  # Normalize to [0,1]
-        
-        # Normalize match count (assuming max is 3 or 5 matches)
+        max_health = 100.0
+        screen_width = 263.0
+        screen_height = 240.0
         max_matches = 1.0
+        max_score = 100000.0
+        
+        feature_vector.append(step.get("enemy_health", 100) / max_health)
+        feature_vector.append(step.get("enemy_x_position", 0) / screen_width)
+        feature_vector.append(step.get("enemy_y_position", 0) / screen_height)
         feature_vector.append(step.get("enemy_matches_won", 0) / max_matches)
         
-        # One-hot encode enemy state (already normalized by design)
         oneHotEnemyState = [0] * len(DeepQAgent.stateIndices.keys())
         enemy_status = step.get("enemy_status", 512)
         if enemy_status not in DeepQAgent.doneKeys:
             oneHotEnemyState[DeepQAgent.stateIndices[enemy_status]] = 1
         feature_vector += oneHotEnemyState
         
-        # One-hot encode enemy character (already normalized by design)
         oneHotEnemyChar = [0] * 8
         enemy_char = step.get("enemy_character", 0)
         if enemy_char < len(oneHotEnemyChar):
             oneHotEnemyChar[enemy_char] = 1
         feature_vector += oneHotEnemyChar
         
-        # Player Data with normalization
-        feature_vector.append(step.get("health", 100) / max_health)  # Normalize to [0,1]
-        feature_vector.append(step.get("x_position", 0) / screen_width)  # Normalize to [0,1]
-        feature_vector.append(step.get("y_position", 0) / screen_height)  # Normalize to [0,1]
-        
-        # Normalize player matches won
+        feature_vector.append(step.get("health", 100) / max_health)
+        feature_vector.append(step.get("x_position", 0) / screen_width)
+        feature_vector.append(step.get("y_position", 0) / screen_height)
         feature_vector.append(step.get("matches_won", 0) / max_matches)
-        
-        # Normalize score - this requires knowing the typical score range
-        # If scores typically range from 0 to 10000, for example:
-        max_score = 100000.0
         feature_vector.append(step.get("score", 0) / max_score)
         
-        # One-hot encode player state (already normalized by design)
         oneHotPlayerState = [0] * len(DeepQAgent.stateIndices.keys())
         player_status = step.get("status", 512)
         if player_status not in DeepQAgent.doneKeys:
             oneHotPlayerState[DeepQAgent.stateIndices[player_status]] = 1
         feature_vector += oneHotPlayerState
         
-        # Calculate and normalize relative distance
         player_x = step.get("x_position", 0)
         enemy_x = step.get("enemy_x_position", 0)
         x_distance = enemy_x - player_x
-        # Normalize distance - max distance could be screen width
         feature_vector.append(x_distance / screen_width)
         
-        # Ensure feature_vector length matches stateSize
         feature_vector = feature_vector[:self.stateSize]
         if len(feature_vector) < self.stateSize:
             feature_vector += [0] * (self.stateSize - len(feature_vector))
         
         feature_vector = np.reshape(feature_vector, [1, self.stateSize])
         return feature_vector
-
 
     def prepareForNextFight(self):
         """Reset memory for a new fight"""
@@ -356,7 +321,6 @@ class DeepQAgent:
     def getRandomMove(self, info):
         """Get a random move from the available move list"""
         move, frameInputs = Moves.getRandomMove()
-        # Handle directional moves
         if Moves.isDirectionalMove(move):
             facing_right = info.get("x_position", 100) < info.get("enemy_x_position", 200)
             frameInputs = frameInputs[0 if facing_right else 1]
@@ -365,34 +329,29 @@ class DeepQAgent:
     def convertMoveToFrameInputs(self, move, info):
         """Convert a move to a list of button arrays."""
         frameInputs = Moves.getMoveInputs(move)
-        # direction move means direction is dep on user facing
         if Moves.isDirectionalMove(move):
             facing_right = info.get("x_position", 100) < info.get("enemy_x_position", 200)
             frameInputs = frameInputs[0 if facing_right else 1]
         return frameInputs
 
-    # just use what model has
     def getMove(self, obs, info):
         """Returns a set of button inputs generated by the Agent's network"""
         start_time = time.time()
         
-        # Randomly explore with probability epsilon
         if random.random() < self.epsilon:
             move_index, frameInputs = self.getRandomMove(info)
             logger.debug(f"Random move selected (exploration), epsilon: {self.epsilon:.4f}")
             return move_index, frameInputs
         
-        # Exploit: choose best action according to model
         stateData = self.prepareNetworkInputs(info)
         predictedRewards = self.model.predict(stateData, verbose=0)[0]
         move_index = np.argmax(predictedRewards)
         move = list(self.moveList)[move_index]
         frameInputs = self.convertMoveToFrameInputs(move, info)
-        move_time = (time.time() - start_time) * 1000  # ms
+        move_time = (time.time() - start_time) * 1000
         logger.debug(f"Predicted move selected in {move_time:.2f}ms, epsilon: {self.epsilon:.4f}")
         return move_index, frameInputs
 
-    # 
     def recordStep(self, step):
         """Records a step with a simple reward structure"""
         self.memory.append(step)
@@ -401,7 +360,7 @@ class DeepQAgent:
             self.memory.pop(0)
             
         self.total_timesteps += 1
-        self.saveStats()  # Update stats file with new timesteps
+        self.saveStats()
 
     def trainNetwork(self, data, model):
         """Runs through a training epoch reviewing the training data"""
@@ -427,7 +386,6 @@ class DeepQAgent:
         
         return model
 
-    # what is review fight
     def reviewFight(self):
         """Review and learn from the previous fight, then save the model"""
         if self.memory:
@@ -444,43 +402,27 @@ class DeepQAgent:
         if self.total_timesteps % 100 == 0:
             self.target_model.set_weights(self.model.get_weights())
         
-        # Save model after every fight
         self.saveModel()
         logger.info("Model saved after fight")
-        
-        # Save stats after each fight, but don't update epsilon
         self.saveStats()
 
-    # save model
     def saveModel(self):
         """Save model weights to file with correct filename format"""
         try:
-            # Create models directory if it doesn't exist
             os.makedirs("models", exist_ok=True)
-            
-            # Use the correct filename with .weights.h5 extension
             model_path = f"models/{self.name}Model.weights.h5"
-            
-            # Save model with proper filename
             self.model.save_weights(model_path)
-            
-            # Verify the file was created
             if os.path.exists(model_path):
                 file_size = os.path.getsize(model_path)
                 logger.info(f"Model saved successfully to {model_path} (size: {file_size} bytes)")
             else:
                 logger.error(f"Failed to save model: File {model_path} does not exist after save attempt")
-            
-            # Also save stats
             self.saveStats()
-            
         except Exception as e:
             logger.error(f"Error saving model: {str(e)}")
-            # Print stack trace for debugging
             import traceback
             logger.error(traceback.format_exc())
 
-    # just load model
     def loadModel(self):
         """Load model weights from file if available"""
         model_path = f"models/{self.name}Model.h5"
@@ -489,7 +431,5 @@ class DeepQAgent:
             logger.info(f"Loaded model from {model_path}")
             self.target_model.set_weights(self.model.get_weights())
 
-
-# Register custom loss function
 from tensorflow.keras.utils import get_custom_objects
 get_custom_objects().update({"_huber_loss": DeepQAgent._huber_loss})
