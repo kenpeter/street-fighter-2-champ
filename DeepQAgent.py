@@ -122,7 +122,6 @@ class DeepQAgent:
     DONE_INDEX = 6
     MAX_DATA_LENGTH = 10000
     DEFAULT_DISCOUNT_RATE = 0.98
-    DEFAULT_LEARNING_RATE = 0.0003
     WIN_RATE_WINDOW = 10
     WIN_RATE_THRESHOLD = 0.1
     TIMESTEP_SCALE = 1000000  # Larger scale to reduce timestep impact
@@ -150,7 +149,7 @@ class DeepQAgent:
     # 1032 victory state
     doneKeys = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
 
-    def __init__(self, stateSize=60, resume=False, epsilon=1.0, name=None, moveList=Moves, lobby=None):
+    def __init__(self, stateSize=60, resume=False, epsilon=1.0, rl=0.001, name=None, moveList=Moves, lobby=None):
         """Initializes the agent and the underlying neural network"""
         self.name = name or self.__class__.__name__
         self.moveList = moveList
@@ -158,7 +157,7 @@ class DeepQAgent:
         self.actionSize = len(moveList)
         self.gamma = DeepQAgent.DEFAULT_DISCOUNT_RATE
         self.lobby = lobby  # Reference to Lobby instance for training_stats
-        self.learningRate = DeepQAgent.DEFAULT_LEARNING_RATE
+        self.learningRate = rl
         self.resume = resume
         self.memory = []
         self.model = self.initializeNetwork()
@@ -171,7 +170,7 @@ class DeepQAgent:
         if resume:
             self.loadModel()
             self.loadStats()
-            
+
         self.total_timesteps = self.stats["total_timesteps"]
         
         # Update lobby stats if available
@@ -205,13 +204,13 @@ class DeepQAgent:
         shared = BatchNormalization()(shared)
         shared = Dropout(0.2)(shared)
         
-        # Value stream - estimates state value V(s)
+        # curr state good or bad
         value_stream = Dense(256, activation='relu')(shared)
         value_stream = BatchNormalization()(value_stream)
         value_stream = Dense(128, activation='relu')(value_stream)
         value_stream = Dense(1)(value_stream)  # Single value output
         
-        # Advantage stream - estimates advantage of actions A(s,a)
+        # what action is the best in this state
         advantage_stream = Dense(256, activation='relu')(shared)
         advantage_stream = BatchNormalization()(advantage_stream)
         advantage_stream = Dense(128, activation='relu')(advantage_stream)

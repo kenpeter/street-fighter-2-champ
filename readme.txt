@@ -15,7 +15,7 @@ python -m retro.import .
 
 
 
-python Lobby.py --episodes 1 
+python Lobby.py --episodes 100 --epsilon 1.0 --rl 0.001
 
 
 
@@ -29,4 +29,11 @@ Keys "-" and "=": Sagat, M.Bison (final bosses with highest difficulty)
 
 
 
-Win Rate MilestoneEstimated Timesteps RequiredEstimated EpisodesTraining Time (approx.)10% Win Rate~50,000~50~8 hours20% Win Rate98,116 (achieved)100 (achieved)~15 hours30% Win Rate~200,000 (projected)~200~30 hours40% Win Rate~350,000 (projected)~350~52 hours50% Win Rate~500,000 (projected)~500~75 hours60% Win Rate~700,000 (projected)~700~105 hours70% Win Rate~950,000 (projected)~950~142 hours80% Win Rate~1,300,000 (projected)~1,300~195 hours90% Win RateMay require architecture improvements--
+| Training Phase       | Total Timesteps    | Epsilon (ε) | Learning Rate | Purpose                                                                 |
+|----------------------|--------------------|-------------|---------------|-------------------------------------------------------------------------|
+| Initial Exploration  | 0 - 100,000        | 1.0         | 0.001         | Broad exploration to discover basic strategies                         |
+| Early Learning       | 100,000 - 250,000  | 0.7         | 0.0005        | Begin capitalizing on discovered patterns                              |
+| Mid Learning         | 250,000 - 500,000  | 0.5         | 0.0003        | Balance exploration and exploitation                                   |
+| Advanced Learning    | 500,000 - 750,000  | 0.3         | 0.0001        | Focus more on refining successful strategies                           |
+| Fine-tuning          | 750,000 - 1,000,000| 0.1         | 0.00005       | Exploit learned knowledge with occasional exploration                  |
+| Final Polish         | 1,000,000+         | 0.05        | 0.00001       | Almost pure exploitation for optimal performance                       |

@@ -634,6 +634,12 @@ if __name__ == "__main__":
         default=1.0,
         help="Exploration rate (epsilon) for the agent (between 0.0 and 1.0) - value will be fixed for the entire training session",
     )
+    parser.add_argument(
+        "--rl",
+        type=float,
+        default=1.0,
+        help="learning rate",
+    )
     args = parser.parse_args()
     
     # Always create a default state if needed
@@ -649,6 +655,7 @@ if __name__ == "__main__":
         resume=args.resume,
         lobby=lobby,
         epsilon=args.epsilon,  # Pass the epsilon parameter to the agent
+        rl=args.rl
     )
     
     lobby.addPlayer(agent)
