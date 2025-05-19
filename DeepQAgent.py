@@ -289,7 +289,7 @@ class DeepQAgent:
         feature_vector.append(step.get("enemy_health", 100) / max_health)  # Normalize to [0,1]
         
         # Normalize positions based on game screen dimensions
-        screen_width = 400.0  # Adjust to your game's dimensions
+        screen_width = 263.0  # Adjust to your game's dimensions
         screen_height = 240.0  # Adjust to your game's dimensions
         
         feature_vector.append(step.get("enemy_x_position", 0) / screen_width)  # Normalize to [0,1]
