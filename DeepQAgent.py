@@ -1,8 +1,8 @@
 import numpy as np
 import random
 import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Input, BatchNormalization, Dropout
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.layers import Dense, Input, BatchNormalization, Dropout, Lambda, Add, Subtract
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras import backend as K
 import os
@@ -193,23 +193,41 @@ class DeepQAgent:
         self.target_model.set_weights(self.model.get_weights())
 
     def initializeNetwork(self):
-        """Initializes a Neural Net for Deep-Q learning with improved architecture"""
-        model = Sequential([
-            Input(shape=(self.stateSize,)),
-            Dense(512, activation='relu'),
-            BatchNormalization(),
-            Dropout(0.2),
-            Dense(384, activation='relu'),
-            BatchNormalization(),
-            Dropout(0.2),
-            Dense(256, activation='relu'),
-            BatchNormalization(),
-            Dense(128, activation='relu'),
-            Dense(self.actionSize, activation='linear')
-        ])
+        """Initializes a Neural Net with Dueling DQN architecture for improved performance"""
+        # Input layer
+        input_layer = Input(shape=(self.stateSize,))
         
+        # Shared feature layers
+        shared = Dense(512, activation='relu')(input_layer)
+        shared = BatchNormalization()(shared)
+        shared = Dropout(0.2)(shared)
+        shared = Dense(384, activation='relu')(shared)
+        shared = BatchNormalization()(shared)
+        shared = Dropout(0.2)(shared)
+        
+        # Value stream - estimates state value V(s)
+        value_stream = Dense(256, activation='relu')(shared)
+        value_stream = BatchNormalization()(value_stream)
+        value_stream = Dense(128, activation='relu')(value_stream)
+        value_stream = Dense(1)(value_stream)  # Single value output
+        
+        # Advantage stream - estimates advantage of actions A(s,a)
+        advantage_stream = Dense(256, activation='relu')(shared)
+        advantage_stream = BatchNormalization()(advantage_stream)
+        advantage_stream = Dense(128, activation='relu')(advantage_stream)
+        advantage_stream = Dense(self.actionSize)(advantage_stream)  # One output per action
+        
+        # Combine value and advantage streams using the dueling architecture formula
+        # Q(s,a) = V(s) + (A(s,a) - mean(A(s,a)))
+        advantage_mean = Lambda(lambda x: K.mean(x, axis=1, keepdims=True))(advantage_stream)
+        advantage_centered = Subtract()([advantage_stream, advantage_mean])
+        q_values = Add()([value_stream, advantage_centered])
+        
+        # Create and compile model
+        model = Model(inputs=input_layer, outputs=q_values)
         model.compile(loss=self._huber_loss, optimizer=Adam(learning_rate=self.learningRate))
-        logger.info('Successfully initialized model')
+        
+        logger.info('Successfully initialized Dueling DQN model')
         return model
 
 
