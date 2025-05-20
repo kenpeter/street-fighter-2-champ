@@ -19,6 +19,11 @@ python Lobby.py --episodes 100 --epsilon 1.0 --rl 0.001
 
 
 
+python Lobby.py --episodes 1 --epsilon 0.7 --rl 0.0005 --resume
+
+
+
+
 All SF2 Characters as Save States
 
 Added save state options for all 12 fighters in the game:
@@ -37,3 +42,7 @@ Keys "-" and "=": Sagat, M.Bison (final bosses with highest difficulty)
 | Advanced Learning    | 500,000 - 750,000  | 0.3         | 0.0001        | Focus more on refining successful strategies                           |
 | Fine-tuning          | 750,000 - 1,000,000| 0.1         | 0.00005       | Exploit learned knowledge with occasional exploration                  |
 | Final Polish         | 1,000,000+         | 0.05        | 0.00001       | Almost pure exploitation for optimal performance                       |
+
+
+
+

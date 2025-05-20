@@ -161,6 +161,10 @@ class DeepQAgent:
         self.resume = resume
         self.memory = []
         self.model = self.initializeNetwork()
+
+        self.batch_size = 128
+        self.target_update_freq = 10
+        self.training_counter = 0
         
         self.epsilon = epsilon
         self.stats = {"total_timesteps": 0, "wins": 0, "losses": 0}
@@ -352,8 +356,17 @@ class DeepQAgent:
         logger.debug(f"Predicted move selected in {move_time:.2f}ms, epsilon: {self.epsilon:.4f}")
         return move_index, frameInputs
 
+    
     def recordStep(self, step):
         """Records a step with a simple reward structure"""
+        # Create a mutable copy of the step if it's a tuple
+        if isinstance(step, tuple):
+            step = list(step)
+        
+        # normalize rewards
+        if step[self.REWARD_INDEX] != 0:
+            step[self.REWARD_INDEX] = np.clip(step[self.REWARD_INDEX], -10, 10)
+                
         self.memory.append(step)
         
         if len(self.memory) > DeepQAgent.MAX_DATA_LENGTH:
@@ -362,27 +375,49 @@ class DeepQAgent:
         self.total_timesteps += 1
         self.saveStats()
 
+
+
     def trainNetwork(self, data, model):
         """Runs through a training epoch reviewing the training data"""
         if not data:
             return model
         
-        minibatch = random.sample(data, min(len(data), 32))
+        # inc from 32 to 128 bigger batch
+        minibatch = random.sample(data, min(len(data), self.batch_size))
+
+        # state size and action size
+        states = np.zeros((len(minibatch), self.stateSize))  # Fixed: use tuple for shape
+        targets = np.zeros((len(minibatch), self.actionSize))  # Fixed: use tuple for shape
         
-        for state, action, reward, done, next_state in minibatch:
+        for i, (state, action, reward, done, next_state) in enumerate(minibatch):
             if isinstance(action, dict):
                 action = action.get('value', 0)
             
+            # pick action
             action = min(max(0, action), self.actionSize - 1)
-            
-            modelOutput = model.predict(state, verbose=0)[0]
+
+            # store state
+            states[i] = state
+
+            target = model.predict(state, verbose=0)[0]
             
             if not done:
-                reward = reward + self.gamma * np.amax(self.target_model.predict(next_state, verbose=0)[0])
+                # use target network for more stable learning
+                next_q_values = self.target_model.predict(next_state, verbose=0)[0]
+                targets[action] = reward + self.gamma * np.max(next_q_values)
+            else:
+                targets[action] = reward
+
+            # store target - fixed from "targets[i] = target" to handle array properly
+            targets[i] = target
             
-            modelOutput[action] = reward
-            modelOutput = np.reshape(modelOutput, [1, self.actionSize])
-            model.fit(state, modelOutput, epochs=1, verbose=0)
+        # out loop
+        history = model.fit(states, targets, epochs=1, verbose=0, batch_size=self.batch_size)
+
+        self.training_counter += 1
+        if self.training_counter % self.target_update_freq == 0:
+            self.target_model.set_weights(model.get_weights())
+            logger.info("target network updated")
         
         return model
 
@@ -399,11 +434,16 @@ class DeepQAgent:
                 data.append([state, action, reward, done, next_state])
             self.model = self.trainNetwork(data, self.model)
         
-        if self.total_timesteps % 100 == 0:
-            self.target_model.set_weights(self.model.get_weights())
+
+            # same question do 3 times.
+            for _ in range(3):
+                self.model = self.trainNetwork(data, self.model)
         
-        self.saveModel()
-        logger.info("Model saved after fight")
+        # basically, less freq, big batch
+        if self.total_timesteps % 1000 == 0:
+            self.saveModel()
+            logger.info("Model saved after fight")
+
         self.saveStats()
 
     def saveModel(self):
