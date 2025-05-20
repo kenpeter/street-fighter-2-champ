@@ -163,7 +163,7 @@ class DeepQAgent:
         self.model = self.initializeNetwork()
 
         self.batch_size = 128
-        self.target_update_freq = 10
+        self.target_update_freq = 100
         self.training_counter = 0
         
         self.epsilon = epsilon
@@ -432,11 +432,9 @@ class DeepQAgent:
                 done = step[self.DONE_INDEX]
                 next_state = self.prepareNetworkInputs(step[self.NEXT_STATE_INDEX])
                 data.append([state, action, reward, done, next_state])
-            self.model = self.trainNetwork(data, self.model)
-        
 
-            # same question do 3 times.
-            for _ in range(3):
+            # same question do 2 times.
+            for _ in range(2):
                 self.model = self.trainNetwork(data, self.model)
         
         # basically, less freq, big batch
