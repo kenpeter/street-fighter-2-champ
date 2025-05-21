@@ -162,6 +162,10 @@ class DeepQAgent:
         self.memory = []
         self.model = self.initializeNetwork()
 
+        # New memory for high-reward experiences
+        self.high_reward_memory = []
+        self.high_reward_threshold = 0.5  # Threshold to consider an experience as high-reward
+
         self.batch_size = 128
         self.target_update_freq = 100
         self.training_counter = 0
@@ -320,7 +324,13 @@ class DeepQAgent:
 
     def prepareForNextFight(self):
         """Reset memory for a new fight"""
-        self.memory = []
+        # Instead of completely clearing memory, keep some high-reward experiences
+        if len(self.high_reward_memory) > 0:
+            logger.info(f"Keeping {len(self.high_reward_memory)} high-reward experiences for continued learning")
+            # Start with high-reward memories and add more as needed during play
+            self.memory = self.high_reward_memory.copy()
+        else:
+            self.memory = []
 
     def getRandomMove(self, info):
         """Get a random move from the available move list"""
@@ -355,10 +365,10 @@ class DeepQAgent:
         move_time = (time.time() - start_time) * 1000
         logger.debug(f"Predicted move selected in {move_time:.2f}ms, epsilon: {self.epsilon:.4f}")
         return move_index, frameInputs
-
     
+
     def recordStep(self, step):
-        """Records a step with a simple reward structure"""
+        """Records a step with a simple reward structure and identifies high-reward experiences"""
         # Create a mutable copy of the step if it's a tuple
         if isinstance(step, tuple):
             step = list(step)
@@ -366,25 +376,52 @@ class DeepQAgent:
         # normalize rewards
         if step[self.REWARD_INDEX] != 0:
             step[self.REWARD_INDEX] = np.clip(step[self.REWARD_INDEX], -10, 10)
-                
+        
+        # Add to memory
         self.memory.append(step)
         
+        # Check if this is a high-reward experience
+        if step[self.REWARD_INDEX] > self.high_reward_threshold:
+            # Add to high-reward memory
+            self.high_reward_memory.append(step)
+            logger.debug(f"Added high-reward experience with reward {step[self.REWARD_INDEX]:.2f}")
+            
+            # Ensure high_reward_memory doesn't get too large
+            if len(self.high_reward_memory) > DeepQAgent.MAX_DATA_LENGTH // 2:
+                # Sort by reward and keep the highest
+                self.high_reward_memory.sort(key=lambda x: x[self.REWARD_INDEX], reverse=True)
+                self.high_reward_memory = self.high_reward_memory[:DeepQAgent.MAX_DATA_LENGTH // 4]
+                logger.debug(f"Pruned high-reward memory to {len(self.high_reward_memory)} items")
+            
+        # Ensure memory doesn't get too large
         if len(self.memory) > DeepQAgent.MAX_DATA_LENGTH:
             self.memory.pop(0)
             
         self.total_timesteps += 1
         self.saveStats()
 
-
-
     def trainNetwork(self, data, model):
-        """Runs through a training epoch reviewing the training data"""
+        """Runs through a training epoch reviewing the training data with sorted replay"""
         if not data:
             return model
         
-        # inc from 32 to 128 bigger batch
-        minibatch = random.sample(data, min(len(data), self.batch_size))
-
+        # Sort data by reward (highest first) to prioritize important experiences
+        sorted_data = sorted(data, key=lambda x: x[self.REWARD_INDEX], reverse=True)
+        
+        # Take a mix of high-reward and random experiences
+        high_reward_count = min(len(sorted_data), self.batch_size // 2)
+        high_reward_samples = sorted_data[:high_reward_count]
+        
+        # Fill the rest with random samples to maintain diversity
+        random_count = self.batch_size - high_reward_count
+        if len(sorted_data) > high_reward_count:
+            random_samples = random.sample(sorted_data[high_reward_count:], min(len(sorted_data) - high_reward_count, random_count))
+        else:
+            random_samples = []
+        
+        # Combine samples
+        minibatch = high_reward_samples + random_samples
+        
         # state size and action size
         states = np.zeros((len(minibatch), self.stateSize))  # Fixed: use tuple for shape
         targets = np.zeros((len(minibatch), self.actionSize))  # Fixed: use tuple for shape
@@ -404,11 +441,11 @@ class DeepQAgent:
             if not done:
                 # use target network for more stable learning
                 next_q_values = self.target_model.predict(next_state, verbose=0)[0]
-                targets[action] = reward + self.gamma * np.max(next_q_values)
+                target[action] = reward + self.gamma * np.max(next_q_values)
             else:
-                targets[action] = reward
+                target[action] = reward
 
-            # store target - fixed from "targets[i] = target" to handle array properly
+            # store target
             targets[i] = target
             
         # out loop
@@ -433,11 +470,11 @@ class DeepQAgent:
                 next_state = self.prepareNetworkInputs(step[self.NEXT_STATE_INDEX])
                 data.append([state, action, reward, done, next_state])
 
-            # same question do 2 times.
+            # Train twice for better learning
             for _ in range(2):
                 self.model = self.trainNetwork(data, self.model)
         
-        # basically, less freq, big batch
+        # Save model periodically
         if self.total_timesteps % 1000 == 0:
             self.saveModel()
             logger.info("Model saved after fight")
