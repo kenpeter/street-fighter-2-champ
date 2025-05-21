@@ -404,7 +404,7 @@ class Lobby:
             
             # Add significant win/loss rewards
             if info.get("enemy_health", 100) <= 0:  # Win condition
-                custom_reward += 80.0  # Large positive reward for winning
+                custom_reward += 320.0  # Large positive reward for winning
             elif info.get("health", 100) <= 0:  # Loss condition
                 custom_reward -= 15.0  # Large negative reward for losing
                 
