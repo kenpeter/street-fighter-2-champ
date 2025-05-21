@@ -19,7 +19,7 @@ python Lobby.py --episodes 10 --epsilon 1.0 --rl 0.001 --resume
 
 
 
-python Lobby.py --episodes 10 --epsilon 0.7 --rl 0.0005 --resume
+python Lobby.py --episodes 10 --epsilon 0.8 --rl 0.0005 --resume
 
 
 

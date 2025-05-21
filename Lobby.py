@@ -397,7 +397,7 @@ class Lobby:
             # Positioning reward
             screen_width = 263.0
             x_distance = abs(info.get("x_position", 100) - info.get("enemy_x_position", 200))
-            position_reward = 0.1 * (1 - x_distance / screen_width)
+            position_reward = 1.5 * (1 - x_distance / screen_width)
             
             # Combine all reward components
             custom_reward = damage_reward + defense_reward + health_diff_reward + position_reward
@@ -407,6 +407,7 @@ class Lobby:
                 custom_reward += 320.0  # Large positive reward for winning
             elif info.get("health", 100) <= 0:  # Loss condition
                 custom_reward -= 15.0  # Large negative reward for losing
+                
                 
             # Add custom reward to environment reward
             self.lastReward += tempReward + custom_reward
