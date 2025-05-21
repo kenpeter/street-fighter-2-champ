@@ -166,7 +166,7 @@ class DeepQAgent:
         self.high_reward_memory = []
         self.high_reward_threshold = 0.5  # Threshold to consider an experience as high-reward
 
-        self.batch_size = 128
+        self.batch_size = 1024
         self.target_update_freq = 100
         self.training_counter = 0
         
@@ -195,21 +195,21 @@ class DeepQAgent:
     def initializeNetwork(self):
         """Initializes a Neural Net with Dueling DQN architecture for improved performance"""
         input_layer = Input(shape=(self.stateSize,))
-        shared = Dense(512, activation='relu')(input_layer)
+        shared = Dense(4096, activation='relu')(input_layer)  # Increased to 4096
         shared = BatchNormalization()(shared)
         shared = Dropout(0.2)(shared)
-        shared = Dense(384, activation='relu')(shared)
+        shared = Dense(2048, activation='relu')(shared)  # Increased to 2048
         shared = BatchNormalization()(shared)
         shared = Dropout(0.2)(shared)
         
-        value_stream = Dense(256, activation='relu')(shared)
+        value_stream = Dense(1024, activation='relu')(shared)  # Increased to 1024
         value_stream = BatchNormalization()(value_stream)
-        value_stream = Dense(128, activation='relu')(value_stream)
+        value_stream = Dense(512, activation='relu')(value_stream)  # Increased to 512
         value_stream = Dense(1)(value_stream)
         
-        advantage_stream = Dense(256, activation='relu')(shared)
+        advantage_stream = Dense(1024, activation='relu')(shared)  # Increased to 1024
         advantage_stream = BatchNormalization()(advantage_stream)
-        advantage_stream = Dense(128, activation='relu')(advantage_stream)
+        advantage_stream = Dense(512, activation='relu')(advantage_stream)  # Increased to 512
         advantage_stream = Dense(self.actionSize)(advantage_stream)
         
         advantage_mean = Lambda(lambda x: K.mean(x, axis=1, keepdims=True))(advantage_stream)
@@ -218,7 +218,7 @@ class DeepQAgent:
         
         model = Model(inputs=input_layer, outputs=q_values)
         model.compile(loss=self._huber_loss, optimizer=Adam(learning_rate=self.learningRate))
-        logger.info('Successfully initialized Dueling DQN model')
+        logger.info('Successfully initialized Dueling DQN model with increased capacity (4096-2048-1024-512 neurons)')
         return model
 
     @staticmethod
