@@ -384,7 +384,7 @@ class Lobby:
             # Calculate custom rewards based on changes from initial state to current state
             # Reward for damage dealt to opponent
             damage_dealt = max(0, initial_state["enemy_health"] - info.get("enemy_health", 100))
-            damage_reward = damage_dealt * 0.3  # Scale factor can be tuned
+            damage_reward = damage_dealt * 0.9  # Scale factor can be tuned
             
             # Penalty for damage taken
             damage_taken = max(0, initial_state["health"] - info.get("health", 100))
