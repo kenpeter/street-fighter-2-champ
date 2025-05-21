@@ -393,13 +393,18 @@ class Lobby:
             # Small reward for health advantage
             health_diff = info.get("health", 100) - info.get("enemy_health", 100)
             health_diff_reward = health_diff * 0.01  # Small reward for health advantage
+
+            # Positioning reward
+            screen_width = 263.0
+            x_distance = abs(info.get("x_position", 100) - info.get("enemy_x_position", 200))
+            position_reward = 0.1 * (1 - x_distance / screen_width)
             
             # Combine all reward components
-            custom_reward = damage_reward + defense_reward + health_diff_reward
+            custom_reward = damage_reward + defense_reward + health_diff_reward + position_reward
             
             # Add significant win/loss rewards
             if info.get("enemy_health", 100) <= 0:  # Win condition
-                custom_reward += 60.0  # Large positive reward for winning
+                custom_reward += 80.0  # Large positive reward for winning
             elif info.get("health", 100) <= 0:  # Loss condition
                 custom_reward -= 15.0  # Large negative reward for losing
                 
