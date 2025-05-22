@@ -471,7 +471,7 @@ class DeepQAgent:
                 data.append([state, action, reward, done, next_state])
 
             # Train twice for better learning
-            for _ in range(8):
+            for _ in range(3):
                 self.model = self.trainNetwork(data, self.model)
         
         # Save model periodically

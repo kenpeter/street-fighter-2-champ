@@ -363,14 +363,16 @@ class Lobby:
     # this is the main reward func
     def enterFrameInputs(self):
         self.lastReward = 0
-        start_time = time.time()
         
-        # Store the initial state values for reward calculation
+        # self.lastInfo IS the correct initial state (before action)
         initial_state = {
             "health": self.lastInfo.get("health", 100),
             "enemy_health": self.lastInfo.get("enemy_health", 100),
         }
         
+        final_info = None
+        
+        # Execute frame inputs
         for frame in self.frameInputs:
             step_result = self.environment.step(frame)
             if len(step_result) == 4:
@@ -380,72 +382,40 @@ class Lobby:
                 self.done = terminated or truncated
                     
             info = self.read_ram_values(info)
+            final_info = info  # Keep updating to get the final state
             
-            damage_reward = 0
-            # Calculate custom rewards based on changes from initial state to current state
-            # Reward for damage dealt to opponent
-            damage_dealt = max(0, initial_state["enemy_health"] - info.get("enemy_health", 100))
-            damage_reward = damage_dealt * 2  # Scale factor can be tuned
-            
-            defense_reward = 0
-            # Penalty for damage taken
-            damage_taken = max(0, initial_state["health"] - info.get("health", 100))
-            defense_reward = -damage_taken * 0.15  # Slightly higher penalty for taking damage
-            
-            health_diff_reward = 0
-            # Small reward for health advantage
-            health_diff = info.get("health", 100) - info.get("enemy_health", 100)
-            health_diff_reward = health_diff * 0.01  # Small reward for health advantage
-
-            position_reward = 0
-            # Positioning reward
-            screen_width = 263.0
-            x_distance = abs(info.get("x_position", 100) - info.get("enemy_x_position", 200))
-            position_reward = 1.5 * (1 - x_distance / screen_width)
-            
-
-            # # block
-            # player_status = info.get("status", 512)
-            # enemy_status = info.get("enemy_status", 512)
-            # enemy_is_attacking = enemy_status in [526, 532]  # enemy attack or special move animation
-            # close_distance = x_distance < (screen_width * 0.3)  # enemy is close enough to be dangerous
-
-            anticipation_block_reward = 0    
-            # # Reward blocking when enemy is attacking or in close range
-            # if player_status in [514, 518] and (enemy_is_attacking or close_distance) and damage_taken == 0:
-            #     anticipation_block_reward = 1.0
-
-            # health
-            health_reward = 0
-            # Add significant win/loss rewards
-            if info.get("enemy_health", 100) <= 0:  # Win condition
-                health_reward += 320.0  # Large positive reward for winning
-            elif info.get("health", 100) <= 0:  # Loss condition
-                health_reward -= 15.0  # Large negative reward for losing
-                
-
-            # Combine all reward components
-            custom_reward = damage_reward + defense_reward + health_diff_reward + position_reward + anticipation_block_reward + health_reward
-                
-            # Add custom reward to environment reward
-            self.lastReward += tempReward + custom_reward
+            # Add environment reward
+            self.lastReward += tempReward
             
             if info.get("health", 100) <= 0 or info.get("enemy_health", 100) <= 0:
                 self.done = True
-                logger.info(
-                    f"Game terminated: Player health={info.get('health', 'Unknown')}, Enemy health={info.get('enemy_health', 'Unknown')}"
-                )
-                    
-            if self.done:
-                frame_time = (time.time() - start_time) * 1000  # ms
-                logger.debug(f"Frame processing time: {frame_time:.2f}ms")
-                logger.debug(f"Final reward: {self.lastReward} (includes custom reward: {custom_reward})")
-                return info, obs
-                    
-        frame_time = (time.time() - start_time) * 1000  # ms
-        logger.debug(f"Frame processing time: {frame_time:.2f}ms")
-        return info, obs
-
+                break
+        
+        # Calculate rewards based on TOTAL change from before action to after action
+        if final_info:
+            # What changed during our entire action?
+            damage_dealt = max(0, initial_state["enemy_health"] - final_info.get("enemy_health", 100))
+            damage_reward = damage_dealt * 0.4
+            
+            damage_taken = max(0, initial_state["health"] - final_info.get("health", 100))
+            defense_reward = -damage_taken * 0.4
+            
+            retain_reward = 1.0 if final_info.get("health", 100) == initial_state["health"] else 0.0
+            
+            # Terminal rewards
+            health_reward = 0
+            if final_info.get("enemy_health", 100) <= 0:
+                health_reward += 500
+            elif final_info.get("health", 100) <= 0:
+                health_reward -= 500
+                
+            custom_reward = damage_reward + defense_reward + retain_reward + health_reward
+            self.lastReward += custom_reward
+            
+            logger.debug(f"Reward breakdown - Damage dealt: {damage_dealt}, Damage taken: {damage_taken}, Custom reward: {custom_reward}")
+        
+        return final_info or info, obs
+    
 
     # we speicify episode, then pass down here
     def executeTrainingRun(self, review=True, episodes=1):
