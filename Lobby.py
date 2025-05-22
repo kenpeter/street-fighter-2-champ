@@ -382,26 +382,26 @@ class Lobby:
             info = self.read_ram_values(info)
             
             damage_reward = 0
-            # # Calculate custom rewards based on changes from initial state to current state
-            # # Reward for damage dealt to opponent
-            # damage_dealt = max(0, initial_state["enemy_health"] - info.get("enemy_health", 100))
-            # damage_reward = damage_dealt * 2  # Scale factor can be tuned
+            # Calculate custom rewards based on changes from initial state to current state
+            # Reward for damage dealt to opponent
+            damage_dealt = max(0, initial_state["enemy_health"] - info.get("enemy_health", 100))
+            damage_reward = damage_dealt * 2  # Scale factor can be tuned
             
             defense_reward = 0
-            # # Penalty for damage taken
-            # damage_taken = max(0, initial_state["health"] - info.get("health", 100))
-            # defense_reward = -damage_taken * 0.15  # Slightly higher penalty for taking damage
+            # Penalty for damage taken
+            damage_taken = max(0, initial_state["health"] - info.get("health", 100))
+            defense_reward = -damage_taken * 0.15  # Slightly higher penalty for taking damage
             
             health_diff_reward = 0
-            # # Small reward for health advantage
-            # health_diff = info.get("health", 100) - info.get("enemy_health", 100)
-            # health_diff_reward = health_diff * 0.01  # Small reward for health advantage
+            # Small reward for health advantage
+            health_diff = info.get("health", 100) - info.get("enemy_health", 100)
+            health_diff_reward = health_diff * 0.01  # Small reward for health advantage
 
             position_reward = 0
-            # # Positioning reward
-            # screen_width = 263.0
-            # x_distance = abs(info.get("x_position", 100) - info.get("enemy_x_position", 200))
-            # position_reward = 1.5 * (1 - x_distance / screen_width)
+            # Positioning reward
+            screen_width = 263.0
+            x_distance = abs(info.get("x_position", 100) - info.get("enemy_x_position", 200))
+            position_reward = 1.5 * (1 - x_distance / screen_width)
             
 
             # # block
