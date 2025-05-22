@@ -401,6 +401,12 @@ class Lobby:
             defense_reward = -damage_taken * 0.4
             
             retain_reward = 1.0 if final_info.get("health", 100) == initial_state["health"] else 0.0
+
+            stun_reward = 0
+            if final_info.get("enemy_status", 512) == 1024 and initial_state["enemy_status"] != 1024:
+                stun_reward += 50  # Reward for stunning enemy
+            if final_info.get("status", 512) == 1024 and initial_state["status"] != 1024:
+                stun_reward -= 25  # Penalty for getting stunned
             
             # Terminal rewards
             health_reward = 0
@@ -409,7 +415,7 @@ class Lobby:
             elif final_info.get("health", 100) <= 0:
                 health_reward -= 500
                 
-            custom_reward = damage_reward + defense_reward + retain_reward + health_reward
+            custom_reward = damage_reward + defense_reward + retain_reward + stun_reward + health_reward
             self.lastReward += custom_reward
             
             logger.debug(f"Reward breakdown - Damage dealt: {damage_dealt}, Damage taken: {damage_taken}, Custom reward: {custom_reward}")
