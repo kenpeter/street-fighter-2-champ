@@ -3,6 +3,7 @@ import retro
 import os
 import time
 import random
+import math
 from enum import Enum
 import tensorflow as tf
 from tqdm import tqdm
@@ -12,11 +13,8 @@ from DeepQAgent import DeepQAgent, Moves
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("lobby.log"),
-        logging.StreamHandler()
-    ]
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.FileHandler("lobby.log"), logging.StreamHandler()],
 )
 logger = logging.getLogger("Lobby")
 
@@ -41,12 +39,15 @@ if len(physical_devices) > 0:
 else:
     logger.warning("No GPU found. Will use CPU instead.")
 
+
 class Lobby_Full_Exception(Exception):
     pass
+
 
 class Lobby_Modes(Enum):
     SINGLE_PLAYER = 1
     TWO_PLAYER = 2
+
 
 class Lobby:
     NO_ACTION = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -109,6 +110,16 @@ class Lobby:
             "score": {"address": 16744936, "type": ">d4"},
         }
 
+        # Reward system parameters
+        self.full_hp = 176  # Full health in Street Fighter II
+        self.reward_coeff = (
+            3.0  # Coefficient to make win rewards larger than loss penalties
+        )
+        self.num_step_frames = 1  # Number of frames per step
+        self.prev_player_health = self.full_hp
+        self.prev_oppont_health = self.full_hp
+        self.total_timesteps = 0
+
     def read_ram_values(self, info):
         if self.environment is None:
             return info
@@ -154,6 +165,7 @@ class Lobby:
                     elif data_type == ">d4":
                         if addr + 3 < len(ram):
                             import struct
+
                             try:
                                 value = struct.unpack(
                                     ">f",
@@ -189,10 +201,10 @@ class Lobby:
                 except Exception as close_error:
                     logger.warning(f"Warning when closing environment: {close_error}")
                 self.environment = None
-            
+
             self.environment = retro.make(game=self.game, players=self.mode.value)
             self.environment.reset()
-            
+
             state_path = os.path.join(
                 os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis"),
                 f"{state}.state",
@@ -206,7 +218,7 @@ class Lobby:
                     logger.info(f"Loaded state successfully")
                 except Exception as state_error:
                     logger.warning(f"Warning when loading state: {state_error}")
-            
+
             step_result = self.environment.step(Lobby.NO_ACTION)
             if len(step_result) == 4:
                 self.lastObservation, reward, done, self.lastInfo = step_result
@@ -216,22 +228,25 @@ class Lobby:
                     step_result
                 )
                 self.done = terminated or truncated
-            
+
             logger.info("Environment stepped with NO_ACTION")
             logger.info(f"Info keys available: {list(self.lastInfo.keys())}")
-            
+
             self.lastInfo = self.read_ram_values(self.lastInfo)
             logger.info(f"Info keys after RAM reading: {list(self.lastInfo.keys())}")
-            
+
             self.lastAction, self.frameInputs = 0, [Lobby.NO_ACTION]
             self.episode_steps = 0
             self.episode_reward = 0
-            self.initial_health = self.lastInfo.get("health", 100)
-            self.initial_enemy_health = self.lastInfo.get("enemy_health", 100)
-        
+
+            # Initialize health tracking for reward system
+            self.prev_player_health = self.lastInfo.get("health", self.full_hp)
+            self.prev_oppont_health = self.lastInfo.get("enemy_health", self.full_hp)
+
         except Exception as e:
             logger.error(f"Error initializing environment: {e}")
             import traceback
+
             logger.error(traceback.format_exc())
             raise
 
@@ -253,12 +268,12 @@ class Lobby:
             self.initEnvironment(state)
             max_steps = 2500
             step_count = 0
-            
+
             while not self.done and step_count < max_steps:
                 step_count += 1
                 self.episode_steps += 1
                 self.training_stats["total_steps"] += 1
-                
+
                 if len(physical_devices) > 0:
                     with tf.device("/GPU:0"):
                         self.lastAction, self.frameInputs = self.players[0].getMove(
@@ -268,19 +283,20 @@ class Lobby:
                     self.lastAction, self.frameInputs = self.players[0].getMove(
                         self.lastObservation, self.lastInfo
                     )
-                    
+
                 try:
                     info, obs = self.enterFrameInputs()
                 except Exception as e:
                     logger.error(f"ERROR during frame inputs: {e}")
                     import traceback
+
                     logger.error(traceback.format_exc())
                     logger.error(f"Last known state before error: {self.lastInfo}")
                     self.done = True
                     break
-                        
+
                 self.episode_reward += self.lastReward
-                
+
                 # when we play, we push last obs, state, action, reward, curr obs, into mem
                 self.players[0].recordStep(
                     (
@@ -293,13 +309,12 @@ class Lobby:
                         self.done,
                     )
                 )
-                
+
                 self.lastObservation, self.lastInfo = obs, info
-                
-                
+
             self.training_stats["episodes_run"] += 1
             self.training_stats["episode_rewards"].append(self.episode_reward)
-            
+
             if self.lastInfo.get("health", 0) > self.lastInfo.get("enemy_health", 0):
                 self.training_stats["wins"] += 1
                 self.training_stats["session_wins"] += 1
@@ -308,28 +323,29 @@ class Lobby:
                 self.training_stats["losses"] += 1
                 self.training_stats["session_losses"] += 1
                 logger.info("Episode result: LOSS")
-                
+
             logger.info(f"Episode steps: {self.episode_steps}")
             logger.info(f"Episode reward: {self.episode_reward}")
             logger.info(f"Total steps so far: {self.training_stats['total_steps']}")
-            
+
             if step_count >= max_steps:
                 logger.warning(
                     "WARNING: Episode terminated due to step limit, not game completion"
                 )
             else:
                 logger.info("Episode completed naturally")
-                
+
             if self.environment is not None:
                 try:
                     self.environment.close()
                     self.environment = None
                 except Exception as e:
                     logger.error(f"Error closing environment: {e}")
-                    
+
         except Exception as e:
             logger.error(f"Error playing state {state}: {e}")
             import traceback
+
             logger.error(traceback.format_exc())
             if self.environment is not None:
                 try:
@@ -342,13 +358,13 @@ class Lobby:
         required_keys = {
             "continue_timer": 0,
             "round_timer": 0,
-            "enemy_health": 100,
+            "enemy_health": self.full_hp,
             "enemy_x_position": 200,
             "enemy_y_position": 0,
             "enemy_matches_won": 0,
             "enemy_status": 512,
             "enemy_character": 0,
-            "health": 100,
+            "health": self.full_hp,
             "x_position": 100,
             "y_position": 0,
             "status": 512,
@@ -360,68 +376,78 @@ class Lobby:
                 info[key] = default_value
         return info
 
-    # this is the main reward func
+    # Clean reward system - no tempReward, no old damage calculations
     def enterFrameInputs(self):
         self.lastReward = 0
-        
-        # self.lastInfo IS the correct initial state (before action)
-        initial_state = {
-            "health": self.lastInfo.get("health", 100),
-            "enemy_health": self.lastInfo.get("enemy_health", 100),
-        }
-        
         final_info = None
-        
-        # Execute frame inputs
+
+        # Execute frame inputs (ignore tempReward completely)
         for frame in self.frameInputs:
             step_result = self.environment.step(frame)
             if len(step_result) == 4:
-                obs, tempReward, self.done, info = step_result
+                obs, _, self.done, info = step_result  # Ignore tempReward
             else:
-                obs, tempReward, terminated, truncated, info = step_result
+                obs, _, terminated, truncated, info = step_result  # Ignore tempReward
                 self.done = terminated or truncated
-                    
+
             info = self.read_ram_values(info)
             final_info = info  # Keep updating to get the final state
-            
-            # Add environment reward
-            self.lastReward += tempReward
-            
-            if info.get("health", 100) <= 0 or info.get("enemy_health", 100) <= 0:
+
+            # Early termination check
+            if (
+                info.get("health", self.full_hp) <= 0
+                or info.get("enemy_health", self.full_hp) <= 0
+            ):
                 self.done = True
                 break
-        
-        # Calculate rewards based on TOTAL change from before action to after action
-        if final_info:
-            # What changed during our entire action?
-            damage_dealt = max(0, initial_state["enemy_health"] - final_info.get("enemy_health", 100))
-            damage_reward = damage_dealt * 0.4
-            
-            damage_taken = max(0, initial_state["health"] - final_info.get("health", 100))
-            defense_reward = -damage_taken * 0.4
-            
-            retain_reward = 1.0 if final_info.get("health", 100) == initial_state["health"] else 0.0
 
-            stun_reward = 0
-            if final_info.get("enemy_status", 512) == 1024 and initial_state["enemy_status"] != 1024:
-                stun_reward += 50  # Reward for stunning enemy
-            if final_info.get("status", 512) == 1024 and initial_state["status"] != 1024:
-                stun_reward -= 25  # Penalty for getting stunned
-            
-            # Terminal rewards
-            health_reward = 0
-            if final_info.get("enemy_health", 100) <= 0:
-                health_reward += 500
-            elif final_info.get("health", 100) <= 0:
-                health_reward -= 500
-                
-            custom_reward = damage_reward + defense_reward + retain_reward + stun_reward + health_reward
-            self.lastReward += custom_reward
-            
-            logger.debug(f"Reward breakdown - Damage dealt: {damage_dealt}, Damage taken: {damage_taken}, Custom reward: {custom_reward}")
-        
+        # NEW CLEAN REWARD SYSTEM
+        if final_info:
+            # Map to the variable names from your reward system
+            curr_player_health = final_info.get("health", self.full_hp)
+            curr_oppont_health = final_info.get("enemy_health", self.full_hp)
+
+            self.total_timesteps += self.num_step_frames
+
+            # Game is over and player loses
+            if curr_player_health < 0:
+                custom_reward = -math.pow(
+                    self.full_hp, (curr_oppont_health + 1) / (self.full_hp + 1)
+                )
+                custom_done = True
+                logger.info(f"PLAYER LOST - Reward: {custom_reward:.2f}")
+
+            # Game is over and player wins
+            elif curr_oppont_health < 0:
+                custom_reward = (
+                    math.pow(
+                        self.full_hp, (curr_player_health + 1) / (self.full_hp + 1)
+                    )
+                    * self.reward_coeff
+                )
+                custom_done = True
+                logger.info(f"PLAYER WON - Reward: {custom_reward:.2f}")
+
+            # Fighting is still going on
+            else:
+                custom_reward = self.reward_coeff * (
+                    self.prev_oppont_health - curr_oppont_health
+                ) - (self.prev_player_health - curr_player_health)
+                self.prev_player_health = curr_player_health
+                self.prev_oppont_health = curr_oppont_health
+                custom_done = False
+
+                logger.debug(
+                    f"Combat reward: {custom_reward:.2f} (Player: {curr_player_health}, Enemy: {curr_oppont_health})"
+                )
+
+            self.lastReward = custom_reward
+
+            # Override done state if needed
+            if custom_done:
+                self.done = True
+
         return final_info or info, obs
-    
 
     # we speicify episode, then pass down here
     def executeTrainingRun(self, review=True, episodes=1):
@@ -433,7 +459,7 @@ class Lobby:
         # total episode
         for episodeNumber in tqdm(range(episodes), desc="Training Episodes"):
             logger.info(f"\n=== Starting episode {episodeNumber+1}/{episodes} ===")
-            
+
             states = Lobby.getStates()
             if not states:
                 logger.warning("No state files found. Creating a default state...")
@@ -446,10 +472,10 @@ class Lobby:
                         "Please create at least one state file before running training."
                     )
                     return
-                    
+
             self.episode_steps = 0
             self.episode_reward = 0
-            
+
             # we load the state file, fight each enemy, then we play (inject all info into mem)
             # finish play, we review it (train it)
             for state in states:
@@ -457,7 +483,7 @@ class Lobby:
                 try:
                     # we play then train
                     self.play(state=state)
-                    
+
                     if review and self.players[0].__class__.__name__ != "Agent":
                         if len(physical_devices) > 0:
                             with tf.device("/GPU:0"):
@@ -467,6 +493,7 @@ class Lobby:
                 except Exception as e:
                     logger.error(f"Error playing state {state}: {e}")
                     import traceback
+
                     logger.error(traceback.format_exc())
                     if self.environment is not None:
                         try:
@@ -488,24 +515,31 @@ class Lobby:
         logger.info(
             f"Total Win/Loss Record: {self.training_stats['wins']}W - {self.training_stats['losses']}L ({win_rate:.2f}%)"
         )
-        
+
         # Display current epsilon value being used by the agent
         if hasattr(self.players[0], "epsilon"):
             logger.info(f"Current epsilon value: {self.players[0].epsilon:.4f}")
-        
+
         session_win_rate = (
             (
                 self.training_stats["session_wins"]
-                / (self.training_stats["session_losses"] + self.training_stats["session_wins"])
+                / (
+                    self.training_stats["session_losses"]
+                    + self.training_stats["session_wins"]
+                )
             )
             * 100
-            if (self.training_stats["session_losses"] + self.training_stats["session_wins"]) > 0
+            if (
+                self.training_stats["session_losses"]
+                + self.training_stats["session_wins"]
+            )
+            > 0
             else 0
         )
         logger.info(
             f"Current session record: {self.training_stats['session_wins']}W - {self.training_stats['session_losses']}L ({session_win_rate:.2f}%)"
         )
-        
+
         if hasattr(self.players[0], "loaded_stats") and self.players[0].loaded_stats:
             previous_wins = (
                 self.training_stats["wins"] - self.training_stats["session_wins"]
@@ -528,7 +562,7 @@ class Lobby:
                     logger.info("Performance trend: STABLE")
                 else:
                     logger.info("Performance trend: DECLINING")
-                    
+
         accumulated_stats = "No"
         if hasattr(self.players[0], "total_timesteps"):
             if (
@@ -538,17 +572,17 @@ class Lobby:
                 accumulated_stats = "Yes (--resume)"
         logger.info(f"Accumulated stats: {accumulated_stats}")
         logger.info(f"Total training time: {total_time:.2f} seconds")
-        
+
         steps_per_second = (
             self.training_stats["total_steps"] / total_time if total_time > 0 else 0
         )
         logger.info(f"Training efficiency: {steps_per_second:.2f} steps/second")
-        
+
         if hasattr(self.players[0], "total_timesteps"):
             logger.info(
                 f"Agent's accumulated training timesteps: {self.players[0].total_timesteps}"
             )
-            
+
         if len(self.training_stats["episode_rewards"]) >= 2:
             first_episodes = self.training_stats["episode_rewards"][
                 : min(3, len(self.training_stats["episode_rewards"]))
@@ -570,36 +604,39 @@ class Lobby:
             else:
                 reward_trend = last_rewards - first_rewards
                 logger.info(f"Reward trend: {reward_trend:+.2f}")
-                
+
             if last_rewards > first_rewards:
                 logger.info("Learning assessment: POSITIVE - Agent is improving")
             elif last_rewards > first_rewards * 0.95:
-                logger.info("Learning assessment: NEUTRAL - Agent performance is stable")
+                logger.info(
+                    "Learning assessment: NEUTRAL - Agent performance is stable"
+                )
             else:
                 logger.warning(
                     "Learning assessment: NEGATIVE - Agent may be stuck in suboptimal policy"
                 )
         logger.info("===========================================")
 
+
 def create_default_state():
     state_dir = os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis")
     os.makedirs(state_dir, exist_ok=True)
     state_path = os.path.join(state_dir, "default.state")
-    
+
     try:
         env = retro.make(game="StreetFighterIISpecialChampionEdition-Genesis")
         env.reset()
-        
+
         for _ in range(10):
             env.step([0] * len(env.buttons))
-            
+
         state_data = env.em.get_state()
-        
+
         with open(state_path, "wb") as f:
             f.write(state_data)
         with open(os.path.join(state_dir, "default"), "wb") as f:
             f.write(state_data)
-            
+
         logger.info(f"Created default state at {state_path}")
         env.close()
         return "default"
@@ -607,10 +644,11 @@ def create_default_state():
         logger.error(f"Error creating default state: {e}")
         return None
 
+
 if __name__ == "__main__":
     logger.info("TensorFlow version: %s", tf.__version__)
     logger.info("GPU devices: %s", tf.config.list_physical_devices("GPU"))
-    
+
     parser = argparse.ArgumentParser(
         description="Run the Street Fighter II AI training lobby with CUDA support"
     )
@@ -641,13 +679,13 @@ if __name__ == "__main__":
         help="learning rate",
     )
     args = parser.parse_args()
-    
+
     # Always create a default state if needed
     states = Lobby.getStates()
     if not states:
         logger.info("No state files found. Creating a default state...")
         create_default_state()
-    
+
     # Always use GPU if available and always show progress
     lobby = Lobby()
     agent = DeepQAgent(
@@ -655,9 +693,9 @@ if __name__ == "__main__":
         resume=args.resume,
         lobby=lobby,
         epsilon=args.epsilon,  # Pass the epsilon parameter to the agent
-        rl=args.rl
+        rl=args.rl,
     )
-    
+
     lobby.addPlayer(agent)
     # this is training run
     lobby.executeTrainingRun(episodes=args.episodes)
