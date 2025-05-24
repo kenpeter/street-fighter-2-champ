@@ -38,7 +38,7 @@ if len(physical_devices) > 0:
             tf.config.experimental.set_memory_growth(device, True)
         logger.info("GPU memory growth enabled.")
         tf.config.set_visible_devices(physical_devices[0], "GPU")
-        logger.info(f"Set visible GPU device: {physical_devices[0].name}")
+        logger.info(f"Set visible GPU device: {physical_devices[0]}")
     except Exception as e:
         logger.error(f"Error configuring GPU: {e}")
 else:

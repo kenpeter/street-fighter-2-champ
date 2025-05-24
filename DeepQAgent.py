@@ -210,6 +210,13 @@ class DeepQAgent:
 
         # Load stats FIRST to get current epsilon/lr values
         self.stats = {"total_timesteps": 0, "wins": 0, "losses": 0}
+
+        # Initialize save tracking variables BEFORE loading stats
+        self.save_stats_interval = 1000
+        self.save_model_interval = 5000
+        self.last_stats_save = 0
+        self.last_model_save = 0
+
         if resume:
             self.loadStats()  # This sets epsilon and learningRate from saved values
 
@@ -234,42 +241,20 @@ class DeepQAgent:
             if "losses" not in self.lobby.training_stats:
                 self.lobby.training_stats["losses"] = self.stats.get("losses", 0)
 
+        # Save initial stats
         self.saveStats()
 
         self.target_model = self.initializeNetwork()
         self.target_model.set_weights(self.model.get_weights())
 
-        # Add these for less frequent saving
-        self.save_stats_interval = 1000
-        self.save_model_interval = 5000
-        self.last_stats_save = 0
-        self.last_model_save = 0
+        # Remove the duplicate save interval definitions that were here
 
     def auto_schedule_params(self):
-        """AUTOMATIC parameter scheduling - called every step"""
+        """AUTOMATIC parameter scheduling - called at START of each script run only"""
 
-        # AUTO EPSILON DECAY - gets more aggressive over time
-        old_epsilon = self.epsilon
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-
-        # AUTO LEARNING RATE DECAY - every 10k steps
-        if self.total_timesteps > 0 and self.total_timesteps % self.lr_decay_every == 0:
-            old_lr = self.learningRate
-            self.learningRate = max(
-                self.lr_min, self.learningRate * self.lr_decay_factor
-            )
-            if old_lr != self.learningRate:
-                # Update the model's learning rate
-                K.set_value(self.model.optimizer.learning_rate, self.learningRate)
-                logger.info(
-                    f"🔄 AUTO: Learning rate {old_lr:.6f} → {self.learningRate:.6f} at step {self.total_timesteps}"
-                )
-
-        # Log epsilon changes every 5000 steps
-        if self.total_timesteps % 5000 == 0 and self.total_timesteps > 0:
-            logger.info(
-                f"🎯 AUTO: Epsilon={self.epsilon:.4f}, LR={self.learningRate:.6f} at step {self.total_timesteps}"
-            )
+        # Only update parameters at the very beginning of a new session
+        # This should only run once per script execution, not every step!
+        pass  # Parameters are updated in saveStats() at end of session
 
     def initializeNetwork(self):
         """Initializes a very small Neural Net with Dueling DQN architecture"""
@@ -316,7 +301,7 @@ class DeepQAgent:
         return K.mean(tf.where(cond, squared_loss, quadratic_loss))
 
     def loadStats(self):
-        """Load stats from file if available"""
+        """Load stats and set parameters for THIS session"""
         stats_path = f"stats/{self.name}_stats.json"
         if os.path.exists(stats_path):
             try:
@@ -326,21 +311,38 @@ class DeepQAgent:
                     if "total_timesteps" not in self.stats:
                         self.stats["total_timesteps"] = 0
 
-                    # 🔥 CRITICAL: Restore epsilon and learning rate from saved values
-                    if "current_epsilon" in loaded_stats:
-                        self.epsilon = loaded_stats["current_epsilon"]
+                    # 🔥 Load the NEXT session values (calculated in previous saveStats)
+                    if "next_epsilon" in loaded_stats:
+                        self.epsilon = loaded_stats["next_epsilon"]
                         logger.info(
-                            f"🎯 RESUMED: Epsilon restored to {self.epsilon:.4f}"
+                            f"🎯 SESSION START: Using epsilon {self.epsilon:.4f} for this entire session"
+                        )
+                    elif "current_epsilon" in loaded_stats:
+                        # Fallback: calculate from current
+                        self.epsilon = max(
+                            self.epsilon_min,
+                            loaded_stats["current_epsilon"] * self.epsilon_decay,
+                        )
+                        logger.info(
+                            f"🎯 SESSION START: Calculated epsilon {self.epsilon:.4f} for this session"
                         )
 
-                    if "current_learning_rate" in loaded_stats:
+                    if "next_learning_rate" in loaded_stats:
+                        self.learningRate = loaded_stats["next_learning_rate"]
+                        logger.info(
+                            f"📚 SESSION START: Using learning rate {self.learningRate:.6f} for this session"
+                        )
+                    elif "current_learning_rate" in loaded_stats:
                         self.learningRate = loaded_stats["current_learning_rate"]
                         logger.info(
-                            f"📚 RESUMED: Learning rate restored to {self.learningRate:.6f}"
+                            f"📚 SESSION START: Using learning rate {self.learningRate:.6f} for this session"
                         )
 
                 logger.info(
                     f"📊 Loaded stats: Steps={self.stats['total_timesteps']}, Wins={self.stats.get('wins',0)}, Losses={self.stats.get('losses',0)}"
+                )
+                logger.info(
+                    f"🔒 FIXED for this session: ε={self.epsilon:.4f}, lr={self.learningRate:.6f}"
                 )
 
             except Exception as e:
@@ -356,7 +358,7 @@ class DeepQAgent:
         self.total_timesteps = self.stats["total_timesteps"]
 
     def saveStats(self):
-        """Save stats including current scheduling parameters"""
+        """Save stats and UPDATE parameters for NEXT session"""
         os.makedirs("stats", exist_ok=True)
         stats_path = f"stats/{self.name}_stats.json"
 
@@ -367,14 +369,42 @@ class DeepQAgent:
             wins = self.stats.get("wins", 0)
             losses = self.stats.get("losses", 0)
 
-        # Save current scheduling state
+        # 🚀 UPDATE PARAMETERS FOR NEXT SESSION HERE!
+        # Only update when saving final stats (end of session)
+        if self.total_timesteps - self.last_stats_save >= self.save_stats_interval:
+            # Update epsilon for next session
+            new_epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+
+            # Update learning rate for next session (every ~50k steps worth of sessions)
+            new_lr = self.learningRate
+            sessions_completed = self.total_timesteps // 50000  # Rough estimate
+            if (
+                sessions_completed > 0 and sessions_completed % 5 == 0
+            ):  # Every 5 "big" sessions
+                new_lr = max(self.lr_min, self.learningRate * self.lr_decay_factor)
+
+            # Log changes for next session
+            if new_epsilon != self.epsilon:
+                logger.info(
+                    f"🎯 NEXT SESSION: Epsilon will be {new_epsilon:.4f} (was {self.epsilon:.4f})"
+                )
+            if new_lr != self.learningRate:
+                logger.info(
+                    f"📚 NEXT SESSION: Learning rate will be {new_lr:.6f} (was {self.learningRate:.6f})"
+                )
+
+        # Save current scheduling state (these will be loaded next session)
         self.stats.update(
             {
                 "total_timesteps": self.total_timesteps,
                 "wins": wins,
                 "losses": losses,
-                "current_epsilon": self.epsilon,
-                "current_learning_rate": self.learningRate,
+                "current_epsilon": self.epsilon,  # Current session value
+                "current_learning_rate": self.learningRate,  # Current session value
+                "next_epsilon": max(
+                    self.epsilon_min, self.epsilon * self.epsilon_decay
+                ),  # For next session
+                "next_learning_rate": self.learningRate,  # For next session
                 "initial_epsilon": self.initial_epsilon,
                 "initial_learning_rate": self.initial_learning_rate,
             }
@@ -477,7 +507,7 @@ class DeepQAgent:
         return move_index, frameInputs
 
     def recordStep(self, step):
-        """Simple step recording with AUTO SCHEDULING"""
+        """Simple step recording - NO parameter changes during session"""
         if isinstance(step, tuple):
             step = list(step)
 
@@ -494,10 +524,7 @@ class DeepQAgent:
 
         self.total_timesteps += 1
 
-        # 🚀 AUTO SCHEDULING HAPPENS HERE!
-        self.auto_schedule_params()
-
-        # Save stats occasionally
+        # Save stats occasionally (NO parameter updates here!)
         if self.total_timesteps - self.last_stats_save >= self.save_stats_interval:
             self.saveStats()
             self.last_stats_save = self.total_timesteps

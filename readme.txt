@@ -60,97 +60,25 @@ python lobby.py --episodes 160 --epsilon 1.0 (20)
 ===
 
 
-
-# Session 1 (already completed)
-python Lobby.py --episodes 160 --epsilon 1.0
-
-# Session 2
-python Lobby.py --episodes 160 --epsilon 0.95 --resume
-
-# Session 3
-python Lobby.py --episodes 160 --epsilon 0.90 --resume
-
-# Session 4
-python Lobby.py --episodes 160 --epsilon 0.85 --resume
-
-# Session 5
-python Lobby.py --episodes 160 --epsilon 0.80 --resume
-
-# Session 6
-python Lobby.py --episodes 160 --epsilon 0.75 --resume
-
-# Session 7
-python Lobby.py --episodes 160 --epsilon 0.70 --resume
-
-# Session 8
-python Lobby.py --episodes 160 --epsilon 0.65 --resume
-
-# Session 9
-python Lobby.py --episodes 160 --epsilon 0.60 --resume
-
-# Session 10
-python Lobby.py --episodes 160 --epsilon 0.55 --resume
-
-# Session 11
-python Lobby.py --episodes 160 --epsilon 0.50 --resume
-
-# Session 12
-python Lobby.py --episodes 320 --epsilon 0.45 --resume
-
-# Session 13
-python Lobby.py --episodes 320 --epsilon 0.40 --resume
-
-# Session 14
-python Lobby.py --episodes 320 --epsilon 0.35 --resume
-
-# Session 15
-python Lobby.py --episodes 480 --epsilon 0.30 --resume
-
-# Session 16
-python Lobby.py --episodes 480 --epsilon 0.25 --resume
-
-# Session 17
-python Lobby.py --episodes 480 --epsilon 0.22 --resume
-
-# Session 18
-python Lobby.py --episodes 480 --epsilon 0.20 --resume
-
-# Session 19
-python Lobby.py --episodes 400 --epsilon 0.17 --resume
-
-# Session 20
-python Lobby.py --episodes 320 --epsilon 0.15 --resume
-
-# Session 21
-python Lobby.py --episodes 320 --epsilon 0.12 --resume
-
-# Session 22
-python Lobby.py --episodes 320 --epsilon 0.10 --resume
-
-# Session 23
-python Lobby.py --episodes 400 --epsilon 0.08 --resume
-
-# Session 24
-python Lobby.py --episodes 400 --epsilon 0.06 --resume
-
-# Session 25
-python Lobby.py --episodes 480 --epsilon 0.05 --resume
-
-# Session 26
-python Lobby.py --episodes 480 --epsilon 0.04 --resume
-
-# Session 27
-python Lobby.py --episodes 480 --epsilon 0.03 --resume
-
-# Session 28
-python Lobby.py --episodes 480 --epsilon 0.025 --resume
-
-# Session 29
-python Lobby.py --episodes 480 --epsilon 0.02 --resume
-
-# Session 30
-python Lobby.py --episodes 640 --epsilon 0.01 --resume
-
+│    1    │ python Lobby.py --episodes 160                  │  1.000  │ 0.00100 │  8-12%   │ First run, pure exploration │
+│    2    │ python Lobby.py --episodes 160 --resume         │  0.950  │ 0.00100 │  8-11%   │ Still heavy exploration     │
+│    3    │ python Lobby.py --episodes 160 --resume         │  0.903  │ 0.00100 │  9-12%   │ Learning basic patterns     │
+│    4    │ python Lobby.py --episodes 160 --resume         │  0.858  │ 0.00100 │ 10-14%   │ Combat improvement          │
+│    5    │ python Lobby.py --episodes 160 --resume         │  0.815  │ 0.00100 │ 12-16%   │ Defensive moves learned     │
+│    6    │ python Lobby.py --episodes 160 --resume         │  0.774  │ 0.00100 │ 15-20%   │ Basic combos emerging       │
+│    7    │ python Lobby.py --episodes 160 --resume         │  0.735  │ 0.00100 │ 18-24%   │ Timing improvements         │
+│    8    │ python Lobby.py --episodes 160 --resume         │  0.698  │ 0.00100 │ 22-28%   │ First breakthrough          │
+│    9    │ python Lobby.py --episodes 160 --resume         │  0.663  │ 0.00100 │ 26-32%   │ Consistent improvement      │
+│   10    │ python Lobby.py --episodes 160 --resume         │  0.630  │ 0.00100 │ 30-36%   │ Strategic gameplay          │
+│   12    │ python Lobby.py --episodes 160 --resume         │  0.567  │ 0.00090 │ 36-42%   │ LR decay kicks in           │
+│   15    │ python Lobby.py --episodes 160 --resume         │  0.478  │ 0.00090 │ 42-48%   │ Advanced combos             │
+│   18    │ python Lobby.py --episodes 160 --resume         │  0.403  │ 0.00090 │ 48-55%   │ Balanced performance        │
+│   20    │ python Lobby.py --episodes 160 --resume         │  0.364  │ 0.00090 │ 52-58%   │ More exploitation           │
+│   22    │ python Lobby.py --episodes 160 --resume         │  0.328  │ 0.00081 │ 58-64%   │ Near expert level           │
+│   25    │ python Lobby.py --episodes 160 --resume         │  0.276  │ 0.00081 │ 64-70%   │ Dominant gameplay           │
+│   30    │ python Lobby.py --episodes 160 --resume         │  0.212  │ 0.00081 │ 70-76%   │ Master level                │
+│   35    │ python Lobby.py --episodes 160 --resume         │  0.163  │ 0.00073 │ 76-82%   │ Peak performance            │
+│   40    │ python Lobby.py --episodes 160 --resume         │  0.125  │ 0.00073 │ 80-85%   │ Near maximum
 
 
 
