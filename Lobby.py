@@ -237,6 +237,7 @@ def make_env_worker(env_id, game, state_name, result_queue, command_queue):
                         curr_player_health = final_info.get("health", full_hp)
                         curr_opponent_health = final_info.get("enemy_health", full_hp)
 
+                        # Calculate basic health reward (your original logic)
                         if curr_player_health < 0:
                             total_reward = -math.pow(
                                 full_hp, (curr_opponent_health + 1) / (full_hp + 1)
@@ -251,9 +252,29 @@ def make_env_worker(env_id, game, state_name, result_queue, command_queue):
                             )
                             done = True
                         else:
-                            total_reward = reward_coeff * (
+                            # Base health reward (your original)
+                            base_reward = reward_coeff * (
                                 prev_opponent_health - curr_opponent_health
                             ) - (prev_player_health - curr_player_health)
+
+                            # Just add 2 simple bonuses:
+
+                            # 1. Small bonus for being close to enemy (encourages engagement)
+                            player_x = final_info.get("x_position", 100)
+                            enemy_x = final_info.get("enemy_x_position", 200)
+                            distance = abs(player_x - enemy_x)
+
+                            close_bonus = 0
+                            if distance < 60:  # Close enough to attack
+                                close_bonus = 0.1
+
+                            # 2. Small bonus when enemy is in hit stun (rewards successful attacks)
+                            enemy_status = final_info.get("enemy_status", 512)
+                            stun_bonus = 0
+                            if enemy_status in [1024, 1026, 1028]:  # Enemy stunned/hit
+                                stun_bonus = 0.2
+
+                            total_reward = base_reward + close_bonus + stun_bonus
 
                     # Send step result
                     step_data = {
