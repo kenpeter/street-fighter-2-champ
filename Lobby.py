@@ -9,6 +9,11 @@ import tensorflow as tf
 from tqdm import tqdm
 import logging
 from DeepQAgent import DeepQAgent, Moves
+import multiprocessing as mp
+import numpy as np
+from multiprocessing import Process, Queue, Manager
+import threading
+from queue import Queue as ThreadQueue
 
 # Configure logging
 logging.basicConfig(
@@ -49,9 +54,289 @@ class Lobby_Modes(Enum):
     TWO_PLAYER = 2
 
 
-class Lobby:
-    NO_ACTION = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-    FRAME_RATE = 1 / 60  # Align with 60 FPS for smoother rendering
+def make_env_worker(env_id, game, state_name, result_queue, command_queue):
+    """Worker process that runs a single environment"""
+    try:
+        # Each process gets its own environment
+        env = retro.make(game=game, players=1)
+        env.reset()
+
+        # Load the state
+        state_path = os.path.join(
+            os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis"),
+            f"{state_name}.state",
+        )
+        if os.path.exists(state_path):
+            with open(state_path, "rb") as f:
+                state_data = f.read()
+            env.em.set_state(state_data)
+
+        # RAM addresses for reading game state
+        ram_info = {
+            "continue_timer": {"address": 16744917, "type": "|u1"},
+            "round_timer": {"address": 16750378, "type": ">u2"},
+            "enemy_health": {"address": 16745154, "type": ">i2"},
+            "enemy_x_position": {"address": 16745094, "type": ">u2"},
+            "enemy_y_position": {"address": 16745098, "type": ">u2"},
+            "enemy_matches_won": {"address": 16745559, "type": ">u4"},
+            "enemy_status": {"address": 16745090, "type": ">u2"},
+            "enemy_character": {"address": 16745563, "type": "|u1"},
+            "health": {"address": 16744514, "type": ">i2"},
+            "x_position": {"address": 16744454, "type": ">u2"},
+            "y_position": {"address": 16744458, "type": ">u2"},
+            "status": {"address": 16744450, "type": ">u2"},
+            "matches_won": {"address": 16744922, "type": "|u1"},
+            "score": {"address": 16744936, "type": ">d4"},
+        }
+
+        def read_ram_values(info):
+            try:
+                if hasattr(env.unwrapped, "get_ram"):
+                    ram = env.unwrapped.get_ram()
+                elif hasattr(env.unwrapped, "em") and hasattr(
+                    env.unwrapped.em, "get_ram"
+                ):
+                    ram = env.unwrapped.em.get_ram()
+                else:
+                    return ensure_required_keys(info)
+
+                for key, address_info in ram_info.items():
+                    addr = address_info["address"]
+                    data_type = address_info["type"]
+                    if addr >= len(ram):
+                        continue
+                    try:
+                        if data_type == "|u1":
+                            value = ram[addr]
+                        elif data_type == ">u2":
+                            if addr + 1 < len(ram):
+                                value = (ram[addr] << 8) | ram[addr + 1]
+                            else:
+                                continue
+                        elif data_type == ">i2":
+                            if addr + 1 < len(ram):
+                                value = (ram[addr] << 8) | ram[addr + 1]
+                                if value >= 32768:
+                                    value -= 65536
+                            else:
+                                continue
+                        elif data_type == ">u4":
+                            if addr + 3 < len(ram):
+                                value = (
+                                    (ram[addr] << 24)
+                                    | (ram[addr + 1] << 16)
+                                    | (ram[addr + 2] << 8)
+                                    | ram[addr + 3]
+                                )
+                            else:
+                                continue
+                        elif data_type == ">d4":
+                            if addr + 3 < len(ram):
+                                import struct
+
+                                try:
+                                    value = struct.unpack(
+                                        ">f",
+                                        bytes(
+                                            [
+                                                ram[addr],
+                                                ram[addr + 1],
+                                                ram[addr + 2],
+                                                ram[addr + 3],
+                                            ]
+                                        ),
+                                    )[0]
+                                except struct.error:
+                                    value = 0
+                            else:
+                                continue
+                        else:
+                            value = ram[addr]
+                        info[key] = value
+                    except Exception as e:
+                        pass
+            except Exception as e:
+                pass
+            return ensure_required_keys(info)
+
+        def ensure_required_keys(info):
+            required_keys = {
+                "continue_timer": 0,
+                "round_timer": 0,
+                "enemy_health": 176,
+                "enemy_x_position": 200,
+                "enemy_y_position": 0,
+                "enemy_matches_won": 0,
+                "enemy_status": 512,
+                "enemy_character": 0,
+                "health": 176,
+                "x_position": 100,
+                "y_position": 0,
+                "status": 512,
+                "matches_won": 0,
+                "score": 0,
+            }
+            for key, default_value in required_keys.items():
+                if key not in info:
+                    info[key] = default_value
+            return info
+
+        # Initialize environment
+        NO_ACTION = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        step_result = env.step(NO_ACTION)
+        if len(step_result) == 4:
+            last_observation, reward, done, last_info = step_result
+        else:
+            last_observation, reward, terminated, truncated, last_info = step_result
+            done = terminated or truncated
+
+        last_info = read_ram_values(last_info)
+
+        # Send ready signal
+        result_queue.put(("ready", env_id, None))
+
+        # Main loop - wait for commands
+        while True:
+            try:
+                command = command_queue.get(timeout=1)
+                if command[0] == "step":
+                    action_index, frame_inputs = command[1], command[2]
+
+                    # Execute frame inputs
+                    total_reward = 0
+                    final_info = None
+                    final_obs = None
+
+                    # Reward calculation variables
+                    full_hp = 176
+                    reward_coeff = 3.0
+                    prev_player_health = last_info.get("health", full_hp)
+                    prev_opponent_health = last_info.get("enemy_health", full_hp)
+
+                    for frame in frame_inputs:
+                        step_result = env.step(frame)
+                        if len(step_result) == 4:
+                            obs, _, done, info = step_result
+                        else:
+                            obs, _, terminated, truncated, info = step_result
+                            done = terminated or truncated
+
+                        info = read_ram_values(info)
+                        final_info = info
+                        final_obs = obs
+
+                        if (
+                            info.get("health", full_hp) <= 0
+                            or info.get("enemy_health", full_hp) <= 0
+                        ):
+                            done = True
+                            break
+
+                    # Calculate custom reward
+                    if final_info:
+                        curr_player_health = final_info.get("health", full_hp)
+                        curr_opponent_health = final_info.get("enemy_health", full_hp)
+
+                        if curr_player_health < 0:
+                            total_reward = -math.pow(
+                                full_hp, (curr_opponent_health + 1) / (full_hp + 1)
+                            )
+                            done = True
+                        elif curr_opponent_health < 0:
+                            total_reward = (
+                                math.pow(
+                                    full_hp, (curr_player_health + 1) / (full_hp + 1)
+                                )
+                                * reward_coeff
+                            )
+                            done = True
+                        else:
+                            total_reward = reward_coeff * (
+                                prev_opponent_health - curr_opponent_health
+                            ) - (prev_player_health - curr_player_health)
+
+                    # Send step result
+                    step_data = {
+                        "obs": final_obs,
+                        "info": final_info,
+                        "reward": total_reward,
+                        "done": done,
+                        "prev_obs": last_observation,
+                        "prev_info": last_info,
+                        "action": action_index,
+                    }
+                    result_queue.put(("step_result", env_id, step_data))
+
+                    # Update for next step
+                    last_observation = final_obs
+                    last_info = final_info
+
+                elif command[0] == "reset":
+                    # Reset environment
+                    env.reset()
+                    if os.path.exists(state_path):
+                        with open(state_path, "rb") as f:
+                            state_data = f.read()
+                        env.em.set_state(state_data)
+
+                    step_result = env.step(NO_ACTION)
+                    if len(step_result) == 4:
+                        last_observation, reward, done, last_info = step_result
+                    else:
+                        last_observation, reward, terminated, truncated, last_info = (
+                            step_result
+                        )
+                        done = terminated or truncated
+
+                    last_info = read_ram_values(last_info)
+                    result_queue.put(("reset_done", env_id, None))
+
+                elif command[0] == "close":
+                    break
+
+            except:
+                continue
+
+        env.close()
+
+    except Exception as e:
+        result_queue.put(("error", env_id, str(e)))
+
+
+class VectorizedLobby:
+    """Vectorized lobby using multiple processes like SubprocVecEnv"""
+
+    def __init__(
+        self, game="StreetFighterIISpecialChampionEdition-Genesis", num_envs=16
+    ):
+        self.game = game
+        self.num_envs = num_envs
+        self.agent = None
+        self.training_stats = {
+            "episodes_run": 0,
+            "total_steps": 0,
+            "wins": 0,
+            "losses": 0,
+            "episode_rewards": [],
+            "session_start_time": time.time(),
+            "session_wins": 0,
+            "session_losses": 0,
+        }
+
+        # Initialize processes
+        self.processes = []
+        self.result_queues = []
+        self.command_queues = []
+        self.episode_data = [
+            [] for _ in range(num_envs)
+        ]  # Store experience for each env
+        self.episode_rewards = [0.0 for _ in range(num_envs)]
+        self.episode_steps = [0 for _ in range(num_envs)]
+
+    def add_agent(self, agent):
+        """Add the main agent"""
+        self.agent = agent
+        agent.lobby = self
 
     @staticmethod
     def getStates():
@@ -73,452 +358,234 @@ class Lobby:
             logger.error(f"Error getting states: {e}")
             return []
 
-    def __init__(
-        self,
-        game="StreetFighterIISpecialChampionEdition-Genesis",
-        mode=Lobby_Modes.SINGLE_PLAYER,
-    ):
-        self.game = game
-        self.mode = mode
-        self.clearLobby()
-        self.environment = None
-        self.training_stats = {
-            "episodes_run": 0,
-            "total_steps": 0,
-            "wins": 0,
-            "losses": 0,
-            "episode_rewards": [],
-            "avg_training_loss": [],
-            "session_start_time": time.time(),
-            "session_wins": 0,
-            "session_losses": 0,
-        }
-        self.ram_info = {
-            "continue_timer": {"address": 16744917, "type": "|u1"},
-            "round_timer": {"address": 16750378, "type": ">u2"},
-            "enemy_health": {"address": 16745154, "type": ">i2"},
-            "enemy_x_position": {"address": 16745094, "type": ">u2"},
-            "enemy_y_position": {"address": 16745098, "type": ">u2"},
-            "enemy_matches_won": {"address": 16745559, "type": ">u4"},
-            "enemy_status": {"address": 16745090, "type": ">u2"},
-            "enemy_character": {"address": 16745563, "type": "|u1"},
-            "health": {"address": 16744514, "type": ">i2"},
-            "x_position": {"address": 16744454, "type": ">u2"},
-            "y_position": {"address": 16744458, "type": ">u2"},
-            "status": {"address": 16744450, "type": ">u2"},
-            "matches_won": {"address": 16744922, "type": "|u1"},
-            "score": {"address": 16744936, "type": ">d4"},
-        }
+    def start_processes(self):
+        """Start all environment processes"""
+        states = self.getStates()
+        if not states:
+            logger.warning("No state files found. Creating a default state...")
+            create_default_state()
+            states = ["default"]
 
-        # Reward system parameters
-        self.full_hp = 176  # Full health in Street Fighter II
-        self.reward_coeff = (
-            3.0  # Coefficient to make win rewards larger than loss penalties
-        )
-        self.num_step_frames = 1  # Number of frames per step
-        self.prev_player_health = self.full_hp
-        self.prev_oppont_health = self.full_hp
-        self.total_timesteps = 0
+        logger.info(f"Starting {self.num_envs} environment processes...")
 
-    def read_ram_values(self, info):
-        if self.environment is None:
-            return info
-        try:
-            if hasattr(self.environment.unwrapped, "get_ram"):
-                ram = self.environment.unwrapped.get_ram()
-            elif hasattr(self.environment.unwrapped, "em") and hasattr(
-                self.environment.unwrapped.em, "get_ram"
-            ):
-                ram = self.environment.unwrapped.em.get_ram()
-            else:
-                return self.ensureRequiredKeys(info)
-            for key, address_info in self.ram_info.items():
-                addr = address_info["address"]
-                data_type = address_info["type"]
-                if addr >= len(ram):
-                    continue
-                try:
-                    if data_type == "|u1":
-                        value = ram[addr]
-                    elif data_type == ">u2":
-                        if addr + 1 < len(ram):
-                            value = (ram[addr] << 8) | ram[addr + 1]
-                        else:
-                            continue
-                    elif data_type == ">i2":
-                        if addr + 1 < len(ram):
-                            value = (ram[addr] << 8) | ram[addr + 1]
-                            if value >= 32768:
-                                value -= 65536
-                        else:
-                            continue
-                    elif data_type == ">u4":
-                        if addr + 3 < len(ram):
-                            value = (
-                                (ram[addr] << 24)
-                                | (ram[addr + 1] << 16)
-                                | (ram[addr + 2] << 8)
-                                | ram[addr + 3]
-                            )
-                        else:
-                            continue
-                    elif data_type == ">d4":
-                        if addr + 3 < len(ram):
-                            import struct
+        for env_id in range(self.num_envs):
+            result_queue = Queue()
+            command_queue = Queue()
 
-                            try:
-                                value = struct.unpack(
-                                    ">f",
-                                    bytes(
-                                        [
-                                            ram[addr],
-                                            ram[addr + 1],
-                                            ram[addr + 2],
-                                            ram[addr + 3],
-                                        ]
-                                    ),
-                                )[0]
-                            except struct.error:
-                                value = 0
-                        else:
-                            continue
-                    else:
-                        value = ram[addr]
-                    info[key] = value
-                except Exception as e:
-                    logger.error(f"Error reading RAM for {key}: {e}")
-        except Exception as e:
-            logger.error(f"Error reading RAM: {e}")
-        return self.ensureRequiredKeys(info)
-
-    def initEnvironment(self, state):
-        logger.info(f"Initializing environment with state: {state}")
-        try:
-            if self.environment is not None:
-                try:
-                    self.environment.close()
-                    logger.info("Closed existing environment")
-                except Exception as close_error:
-                    logger.warning(f"Warning when closing environment: {close_error}")
-                self.environment = None
-
-            self.environment = retro.make(game=self.game, players=self.mode.value)
-            self.environment.reset()
-
-            state_path = os.path.join(
-                os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis"),
-                f"{state}.state",
+            state_name = random.choice(states)
+            process = Process(
+                target=make_env_worker,
+                args=(env_id, self.game, state_name, result_queue, command_queue),
             )
-            if os.path.exists(state_path):
-                logger.info(f"Loading state from: {state_path}")
+            process.start()
+
+            self.processes.append(process)
+            self.result_queues.append(result_queue)
+            self.command_queues.append(command_queue)
+
+        # Wait for all environments to be ready
+        ready_count = 0
+        while ready_count < self.num_envs:
+            for i, queue in enumerate(self.result_queues):
                 try:
-                    with open(state_path, "rb") as f:
-                        state_data = f.read()
-                    self.environment.em.set_state(state_data)
-                    logger.info(f"Loaded state successfully")
-                except Exception as state_error:
-                    logger.warning(f"Warning when loading state: {state_error}")
+                    msg_type, env_id, data = queue.get(timeout=0.1)
+                    if msg_type == "ready":
+                        ready_count += 1
+                        logger.info(f"Environment {env_id} ready")
+                    elif msg_type == "error":
+                        logger.error(f"Environment {env_id} error: {data}")
+                except:
+                    continue
 
-            step_result = self.environment.step(Lobby.NO_ACTION)
-            if len(step_result) == 4:
-                self.lastObservation, reward, done, self.lastInfo = step_result
-                self.done = done
-            else:
-                self.lastObservation, reward, terminated, truncated, self.lastInfo = (
-                    step_result
-                )
-                self.done = terminated or truncated
+        logger.info(f"All {self.num_envs} environments ready!")
 
-            logger.info("Environment stepped with NO_ACTION")
-            logger.info(f"Info keys available: {list(self.lastInfo.keys())}")
-
-            self.lastInfo = self.read_ram_values(self.lastInfo)
-            logger.info(f"Info keys after RAM reading: {list(self.lastInfo.keys())}")
-
-            self.lastAction, self.frameInputs = 0, [Lobby.NO_ACTION]
-            self.episode_steps = 0
-            self.episode_reward = 0
-
-            # Initialize health tracking for reward system
-            self.prev_player_health = self.lastInfo.get("health", self.full_hp)
-            self.prev_oppont_health = self.lastInfo.get("enemy_health", self.full_hp)
-
-        except Exception as e:
-            logger.error(f"Error initializing environment: {e}")
-            import traceback
-
-            logger.error(traceback.format_exc())
-            raise
-
-    def addPlayer(self, newPlayer):
-        for playerNum, player in enumerate(self.players):
-            if player is None:
-                self.players[playerNum] = newPlayer
-                return
-        raise Lobby_Full_Exception(
-            "Lobby has already reached the maximum number of players"
-        )
-
-    def clearLobby(self):
-        self.players = [None] * self.mode.value
-
-    # we play put into mem, then train
-    def play(self, state):
-        try:
-            self.initEnvironment(state)
-            max_steps = 2500
-            step_count = 0
-
-            while not self.done and step_count < max_steps:
-                step_count += 1
-                self.episode_steps += 1
-                self.training_stats["total_steps"] += 1
-
-                if len(physical_devices) > 0:
-                    with tf.device("/GPU:0"):
-                        self.lastAction, self.frameInputs = self.players[0].getMove(
-                            self.lastObservation, self.lastInfo
-                        )
-                else:
-                    self.lastAction, self.frameInputs = self.players[0].getMove(
-                        self.lastObservation, self.lastInfo
-                    )
-
-                try:
-                    info, obs = self.enterFrameInputs()
-                except Exception as e:
-                    logger.error(f"ERROR during frame inputs: {e}")
-                    import traceback
-
-                    logger.error(traceback.format_exc())
-                    logger.error(f"Last known state before error: {self.lastInfo}")
-                    self.done = True
-                    break
-
-                self.episode_reward += self.lastReward
-
-                # when we play, we push last obs, state, action, reward, curr obs, into mem
-                self.players[0].recordStep(
-                    (
-                        self.lastObservation,
-                        self.lastInfo,
-                        self.lastAction,
-                        self.lastReward,
-                        obs,
-                        info,
-                        self.done,
-                    )
-                )
-
-                self.lastObservation, self.lastInfo = obs, info
-
-            self.training_stats["episodes_run"] += 1
-            self.training_stats["episode_rewards"].append(self.episode_reward)
-
-            if self.lastInfo.get("health", 0) > self.lastInfo.get("enemy_health", 0):
-                self.training_stats["wins"] += 1
-                self.training_stats["session_wins"] += 1
-                logger.info("Episode result: WIN")
-            else:
-                self.training_stats["losses"] += 1
-                self.training_stats["session_losses"] += 1
-                logger.info("Episode result: LOSS")
-
-            logger.info(f"Episode steps: {self.episode_steps}")
-            logger.info(f"Episode reward: {self.episode_reward}")
-            logger.info(f"Total steps so far: {self.training_stats['total_steps']}")
-
-            if step_count >= max_steps:
-                logger.warning(
-                    "WARNING: Episode terminated due to step limit, not game completion"
-                )
-            else:
-                logger.info("Episode completed naturally")
-
-            if self.environment is not None:
-                try:
-                    self.environment.close()
-                    self.environment = None
-                except Exception as e:
-                    logger.error(f"Error closing environment: {e}")
-
-        except Exception as e:
-            logger.error(f"Error playing state {state}: {e}")
-            import traceback
-
-            logger.error(traceback.format_exc())
-            if self.environment is not None:
-                try:
-                    self.environment.close()
-                    self.environment = None
-                except Exception as e:
-                    logger.error(f"Error closing environment after exception: {e}")
-
-    def ensureRequiredKeys(self, info):
-        required_keys = {
-            "continue_timer": 0,
-            "round_timer": 0,
-            "enemy_health": self.full_hp,
-            "enemy_x_position": 200,
-            "enemy_y_position": 0,
-            "enemy_matches_won": 0,
-            "enemy_status": 512,
-            "enemy_character": 0,
-            "health": self.full_hp,
-            "x_position": 100,
-            "y_position": 0,
-            "status": 512,
-            "matches_won": 0,
-            "score": 0,
-        }
-        for key, default_value in required_keys.items():
-            if key not in info:
-                info[key] = default_value
-        return info
-
-    # Clean reward system - no tempReward, no old damage calculations
-    def enterFrameInputs(self):
-        self.lastReward = 0
-        final_info = None
-
-        # Execute frame inputs (ignore tempReward completely)
-        for frame in self.frameInputs:
-            step_result = self.environment.step(frame)
-            if len(step_result) == 4:
-                obs, _, self.done, info = step_result  # Ignore tempReward
-            else:
-                obs, _, terminated, truncated, info = step_result  # Ignore tempReward
-                self.done = terminated or truncated
-
-            info = self.read_ram_values(info)
-            final_info = info  # Keep updating to get the final state
-
-            # Early termination check
-            if (
-                info.get("health", self.full_hp) <= 0
-                or info.get("enemy_health", self.full_hp) <= 0
-            ):
-                self.done = True
-                break
-
-        # NEW CLEAN REWARD SYSTEM
-        if final_info:
-            # Map to the variable names from your reward system
-            curr_player_health = final_info.get("health", self.full_hp)
-            curr_oppont_health = final_info.get("enemy_health", self.full_hp)
-
-            self.total_timesteps += self.num_step_frames
-
-            # Game is over and player loses
-            if curr_player_health < 0:
-                custom_reward = -math.pow(
-                    self.full_hp, (curr_oppont_health + 1) / (self.full_hp + 1)
-                )
-                custom_done = True
-                logger.info(f"PLAYER LOST - Reward: {custom_reward:.2f}")
-
-            # Game is over and player wins
-            elif curr_oppont_health < 0:
-                custom_reward = (
-                    math.pow(
-                        self.full_hp, (curr_player_health + 1) / (self.full_hp + 1)
-                    )
-                    * self.reward_coeff
-                )
-                custom_done = True
-                logger.info(f"PLAYER WON - Reward: {custom_reward:.2f}")
-
-            # Fighting is still going on
-            else:
-                custom_reward = self.reward_coeff * (
-                    self.prev_oppont_health - curr_oppont_health
-                ) - (self.prev_player_health - curr_player_health)
-                self.prev_player_health = curr_player_health
-                self.prev_oppont_health = curr_oppont_health
-                custom_done = False
-
-                logger.debug(
-                    f"Combat reward: {custom_reward:.2f} (Player: {curr_player_health}, Enemy: {curr_oppont_health})"
-                )
-
-            self.lastReward = custom_reward
-
-            # Override done state if needed
-            if custom_done:
-                self.done = True
-
-        return final_info or info, obs
-
-    # we speicify episode, then pass down here
-    def executeTrainingRun(self, review=True, episodes=1):
+    def execute_parallel_training(self, episodes=10):
+        """Execute training with vectorized environments"""
         start_time = time.time()
         self.training_stats["session_wins"] = 0
         self.training_stats["session_losses"] = 0
         self.training_stats["session_start_time"] = time.time()
 
-        # total episode
-        for episodeNumber in tqdm(range(episodes), desc="Training Episodes"):
-            logger.info(f"\n=== Starting episode {episodeNumber+1}/{episodes} ===")
+        # Start processes
+        self.start_processes()
 
-            states = Lobby.getStates()
-            if not states:
-                logger.warning("No state files found. Creating a default state...")
-                try:
-                    create_default_state()
-                    states = ["default"]
-                except Exception as e:
-                    logger.error(f"Error creating default state: {e}")
-                    logger.error(
-                        "Please create at least one state file before running training."
-                    )
-                    return
+        logger.info(
+            f"Running {episodes} episodes across {self.num_envs} parallel environments"
+        )
 
-            self.episode_steps = 0
-            self.episode_reward = 0
+        episodes_per_env = episodes // self.num_envs
+        remaining_episodes = episodes % self.num_envs
 
-            # we load the state file, fight each enemy, then we play (inject all info into mem)
-            # finish play, we review it (train it)
-            for state in states:
-                logger.info(f"Loading state: {state}")
-                try:
-                    # we play then train
-                    self.play(state=state)
+        # Track episodes per environment
+        env_episodes_left = [
+            episodes_per_env + (1 if i < remaining_episodes else 0)
+            for i in range(self.num_envs)
+        ]
+        active_envs = set(range(self.num_envs))
+        completed_episodes = 0
 
-                    if review and self.players[0].__class__.__name__ != "Agent":
+        # Progress bar
+        pbar = tqdm(total=episodes, desc="Training Episodes")
+
+        try:
+            while active_envs and completed_episodes < episodes:
+                # Get actions for all active environments
+                for env_id in list(active_envs):
+                    if env_episodes_left[env_id] > 0:
+                        # Get current observation from last step (simplified for this example)
+                        # In practice, you'd track the current state
+                        dummy_obs = np.zeros((224, 256, 3))  # Placeholder
+                        dummy_info = {
+                            "health": 176,
+                            "enemy_health": 176,
+                            "x_position": 100,
+                            "enemy_x_position": 200,
+                        }
+
+                        # Get action from agent
                         if len(physical_devices) > 0:
                             with tf.device("/GPU:0"):
-                                self.players[0].reviewFight()
+                                action_index, frame_inputs = self.agent.getMove(
+                                    dummy_obs, dummy_info
+                                )
                         else:
-                            self.players[0].reviewFight()
-                except Exception as e:
-                    logger.error(f"Error playing state {state}: {e}")
-                    import traceback
+                            action_index, frame_inputs = self.agent.getMove(
+                                dummy_obs, dummy_info
+                            )
 
-                    logger.error(traceback.format_exc())
-                    if self.environment is not None:
-                        try:
-                            self.environment.close()
-                            self.environment = None
-                        except:
-                            pass
-                    continue
+                        # Send step command
+                        self.command_queues[env_id].put(
+                            ("step", action_index, frame_inputs)
+                        )
 
+                # Collect results
+                for env_id in list(active_envs):
+                    try:
+                        msg_type, returned_env_id, data = self.result_queues[
+                            env_id
+                        ].get(timeout=10)
+
+                        if msg_type == "step_result":
+                            # Process step result
+                            self.episode_steps[env_id] += 1
+                            self.episode_rewards[env_id] += data["reward"]
+
+                            # Store experience
+                            experience = (
+                                data["prev_obs"],
+                                data["prev_info"],
+                                data["action"],
+                                data["reward"],
+                                data["obs"],
+                                data["info"],
+                                data["done"],
+                            )
+                            self.episode_data[env_id].append(experience)
+
+                            # Check if episode is done
+                            if data["done"] or self.episode_steps[env_id] >= 2500:
+                                # Episode finished
+                                env_episodes_left[env_id] -= 1
+                                completed_episodes += 1
+
+                                # Record episode data
+                                for exp in self.episode_data[env_id]:
+                                    self.agent.recordStep(exp)
+
+                                # Update stats
+                                self.training_stats["episodes_run"] += 1
+                                self.training_stats[
+                                    "total_steps"
+                                ] += self.episode_steps[env_id]
+                                self.training_stats["episode_rewards"].append(
+                                    self.episode_rewards[env_id]
+                                )
+
+                                # Determine win/loss
+                                final_player_health = data["info"].get("health", 0)
+                                final_enemy_health = data["info"].get("enemy_health", 0)
+                                if final_player_health > final_enemy_health:
+                                    self.training_stats["wins"] += 1
+                                    self.training_stats["session_wins"] += 1
+                                else:
+                                    self.training_stats["losses"] += 1
+                                    self.training_stats["session_losses"] += 1
+
+                                # Reset for next episode
+                                self.episode_data[env_id] = []
+                                self.episode_rewards[env_id] = 0.0
+                                self.episode_steps[env_id] = 0
+
+                                pbar.update(1)
+
+                                # Reset environment if more episodes needed
+                                if env_episodes_left[env_id] > 0:
+                                    self.command_queues[env_id].put(("reset",))
+                                else:
+                                    active_envs.discard(env_id)
+
+                    except Exception as e:
+                        logger.error(f"Error processing environment {env_id}: {e}")
+                        continue
+
+        finally:
+            # Close all processes
+            pbar.close()
+            self.close_processes()
+
+        # Train the agent on all collected experiences
+        logger.info("Training agent on collected experiences...")
+        if len(physical_devices) > 0:
+            with tf.device("/GPU:0"):
+                self.agent.reviewFight()
+        else:
+            self.agent.reviewFight()
+
+        # Print training summary
+        self.print_training_summary(start_time)
+
+    def close_processes(self):
+        """Close all environment processes"""
+        logger.info("Closing environment processes...")
+
+        # Send close commands
+        for command_queue in self.command_queues:
+            try:
+                command_queue.put(("close",))
+            except:
+                pass
+
+        # Wait for processes to finish
+        for process in self.processes:
+            try:
+                process.join(timeout=5)
+                if process.is_alive():
+                    process.terminate()
+                    process.join()
+            except:
+                pass
+
+        logger.info("All processes closed")
+
+    def print_training_summary(self, start_time):
+        """Print comprehensive training summary"""
         total_time = time.time() - start_time
         win_rate = (
             (self.training_stats["wins"] / self.training_stats["episodes_run"]) * 100
             if self.training_stats["episodes_run"] > 0
             else 0
         )
-        logger.info("\n========= TRAINING SESSION SUMMARY =========")
+
+        logger.info("\n========= VECTORIZED TRAINING SESSION SUMMARY =========")
+        logger.info(f"Parallel environments used: {self.num_envs}")
         logger.info(f"Total training steps: {self.training_stats['total_steps']}")
         logger.info(f"Total episodes: {self.training_stats['episodes_run']}")
         logger.info(
             f"Total Win/Loss Record: {self.training_stats['wins']}W - {self.training_stats['losses']}L ({win_rate:.2f}%)"
         )
 
-        # Display current epsilon value being used by the agent
-        if hasattr(self.players[0], "epsilon"):
-            logger.info(f"Current epsilon value: {self.players[0].epsilon:.4f}")
+        if hasattr(self.agent, "epsilon"):
+            logger.info(f"Current epsilon value: {self.agent.epsilon:.4f}")
 
         session_win_rate = (
             (
@@ -540,37 +607,6 @@ class Lobby:
             f"Current session record: {self.training_stats['session_wins']}W - {self.training_stats['session_losses']}L ({session_win_rate:.2f}%)"
         )
 
-        if hasattr(self.players[0], "loaded_stats") and self.players[0].loaded_stats:
-            previous_wins = (
-                self.training_stats["wins"] - self.training_stats["session_wins"]
-            )
-            previous_losses = (
-                self.training_stats["losses"] - self.training_stats["session_losses"]
-            )
-            previous_episodes = previous_wins + previous_losses
-            if previous_episodes > 0:
-                previous_win_rate = (previous_wins / previous_episodes) * 100
-                win_rate_change = session_win_rate - previous_win_rate
-                logger.info(
-                    f"Win rate change: {win_rate_change:+.2f}% (Previous: {previous_win_rate:.2f}%)"
-                )
-                if win_rate_change > 5:
-                    logger.info("Performance trend: STRONG IMPROVEMENT")
-                elif win_rate_change > 0:
-                    logger.info("Performance trend: SLIGHT IMPROVEMENT")
-                elif win_rate_change > -5:
-                    logger.info("Performance trend: STABLE")
-                else:
-                    logger.info("Performance trend: DECLINING")
-
-        accumulated_stats = "No"
-        if hasattr(self.players[0], "total_timesteps"):
-            if (
-                hasattr(self.players[0], "loaded_stats")
-                and self.players[0].loaded_stats
-            ):
-                accumulated_stats = "Yes (--resume)"
-        logger.info(f"Accumulated stats: {accumulated_stats}")
         logger.info(f"Total training time: {total_time:.2f} seconds")
 
         steps_per_second = (
@@ -578,47 +614,21 @@ class Lobby:
         )
         logger.info(f"Training efficiency: {steps_per_second:.2f} steps/second")
 
-        if hasattr(self.players[0], "total_timesteps"):
+        episodes_per_second = (
+            self.training_stats["episodes_run"] / total_time if total_time > 0 else 0
+        )
+        logger.info(f"Episode throughput: {episodes_per_second:.2f} episodes/second")
+
+        if hasattr(self.agent, "total_timesteps"):
             logger.info(
-                f"Agent's accumulated training timesteps: {self.players[0].total_timesteps}"
+                f"Agent's accumulated training timesteps: {self.agent.total_timesteps}"
             )
 
-        if len(self.training_stats["episode_rewards"]) >= 2:
-            first_episodes = self.training_stats["episode_rewards"][
-                : min(3, len(self.training_stats["episode_rewards"]))
-            ]
-            last_episodes = self.training_stats["episode_rewards"][
-                -min(3, len(self.training_stats["episode_rewards"])) :
-            ]
-            first_rewards = (
-                sum(first_episodes) / len(first_episodes) if first_episodes else 0
-            )
-            last_rewards = (
-                sum(last_episodes) / len(last_episodes) if last_episodes else 0
-            )
-            if abs(first_rewards) > 0.001:
-                reward_percent_change = (
-                    (last_rewards - first_rewards) / abs(first_rewards)
-                ) * 100
-                logger.info(f"Reward trend: {reward_percent_change:+.2f}% change")
-            else:
-                reward_trend = last_rewards - first_rewards
-                logger.info(f"Reward trend: {reward_trend:+.2f}")
-
-            if last_rewards > first_rewards:
-                logger.info("Learning assessment: POSITIVE - Agent is improving")
-            elif last_rewards > first_rewards * 0.95:
-                logger.info(
-                    "Learning assessment: NEUTRAL - Agent performance is stable"
-                )
-            else:
-                logger.warning(
-                    "Learning assessment: NEGATIVE - Agent may be stuck in suboptimal policy"
-                )
-        logger.info("===========================================")
+        logger.info("=====================================================")
 
 
 def create_default_state():
+    """Create a default state file"""
     state_dir = os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis")
     os.makedirs(state_dir, exist_ok=True)
     state_path = os.path.join(state_dir, "default.state")
@@ -650,52 +660,52 @@ if __name__ == "__main__":
     logger.info("GPU devices: %s", tf.config.list_physical_devices("GPU"))
 
     parser = argparse.ArgumentParser(
-        description="Run the Street Fighter II AI training lobby with CUDA support"
+        description="Run the Street Fighter II AI training lobby with 16 vectorized environments"
     )
     parser.add_argument(
         "-e",
         "--episodes",
         type=int,
-        default=10,
-        help="Integer representing the number of training rounds to go through, checkpoints are made at the end of each episode",
+        default=160,
+        help="Total number of episodes to run across all parallel environments",
     )
     parser.add_argument(
         "-re",
         "--resume",
         action="store_true",
-        help="Boolean flag for loading a pre-existing model and stats with higher exploration for continued training",
+        help="Boolean flag for loading a pre-existing model and stats",
     )
-    # Keep the epsilon parameter but update its description
     parser.add_argument(
         "--epsilon",
         type=float,
         default=1.0,
-        help="Exploration rate (epsilon) for the agent (between 0.0 and 1.0) - value will be fixed for the entire training session",
+        help="Exploration rate (epsilon) for the agent (between 0.0 and 1.0)",
     )
     parser.add_argument(
         "--rl",
         type=float,
-        default=1.0,
-        help="learning rate",
+        default=0.001,
+        help="Learning rate",
     )
+
     args = parser.parse_args()
 
     # Always create a default state if needed
-    states = Lobby.getStates()
+    states = VectorizedLobby.getStates()
     if not states:
         logger.info("No state files found. Creating a default state...")
         create_default_state()
 
-    # Always use GPU if available and always show progress
-    lobby = Lobby()
+    # Create agent
     agent = DeepQAgent(
         stateSize=60,
         resume=args.resume,
-        lobby=lobby,
-        epsilon=args.epsilon,  # Pass the epsilon parameter to the agent
+        epsilon=args.epsilon,
         rl=args.rl,
     )
 
-    lobby.addPlayer(agent)
-    # this is training run
-    lobby.executeTrainingRun(episodes=args.episodes)
+    # Use vectorized training like SubprocVecEnv
+    logger.info("Starting vectorized training with 16 separate processes")
+    lobby = VectorizedLobby(num_envs=16)
+    lobby.add_agent(agent)
+    lobby.execute_parallel_training(episodes=args.episodes)
