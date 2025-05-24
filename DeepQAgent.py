@@ -223,7 +223,7 @@ class DeepQAgent:
             0.5  # Threshold to consider an experience as high-reward
         )
 
-        self.batch_size = 1024
+        self.batch_size = 512  # Reduced batch size for smaller network
         self.target_update_freq = 100
         self.training_counter = 0
 
@@ -256,25 +256,23 @@ class DeepQAgent:
         self.last_model_save = 0
 
     def initializeNetwork(self):
-        """Initializes a Neural Net with Dueling DQN architecture for improved performance"""
+        """Initializes a very small Neural Net with Dueling DQN architecture for improved performance"""
         input_layer = Input(shape=(self.stateSize,))
-        shared = Dense(512, activation="relu")(input_layer)  # Reduced to 512
+        shared = Dense(64, activation="relu")(input_layer)  # Reduced to 64
         shared = BatchNormalization()(shared)
-        shared = Dropout(0.2)(shared)
-        shared = Dense(256, activation="relu")(shared)  # Reduced to 256
+        shared = Dropout(0.1)(shared)  # Reduced dropout
+        shared = Dense(32, activation="relu")(shared)  # Reduced to 32
         shared = BatchNormalization()(shared)
-        shared = Dropout(0.2)(shared)
+        shared = Dropout(0.1)(shared)  # Reduced dropout
 
-        value_stream = Dense(128, activation="relu")(shared)  # Reduced to 128
+        value_stream = Dense(16, activation="relu")(shared)  # Reduced to 16
         value_stream = BatchNormalization()(value_stream)
-        value_stream = Dense(64, activation="relu")(value_stream)  # Reduced to 64
+        value_stream = Dense(8, activation="relu")(value_stream)  # Reduced to 8
         value_stream = Dense(1)(value_stream)
 
-        advantage_stream = Dense(128, activation="relu")(shared)  # Reduced to 128
+        advantage_stream = Dense(16, activation="relu")(shared)  # Reduced to 16
         advantage_stream = BatchNormalization()(advantage_stream)
-        advantage_stream = Dense(64, activation="relu")(
-            advantage_stream
-        )  # Reduced to 64
+        advantage_stream = Dense(8, activation="relu")(advantage_stream)  # Reduced to 8
         advantage_stream = Dense(self.actionSize)(advantage_stream)
 
         advantage_mean = Lambda(lambda x: K.mean(x, axis=1, keepdims=True))(
@@ -288,7 +286,7 @@ class DeepQAgent:
             loss=self._huber_loss, optimizer=Adam(learning_rate=self.learningRate)
         )
         logger.info(
-            "Successfully initialized Dueling DQN model with reduced capacity (512-256-128-64 neurons)"
+            "Successfully initialized very small Dueling DQN model (64-32-16-8 neurons)"
         )
         return model
 
