@@ -60,9 +60,9 @@ python lobby.py --episodes 160 --epsilon 1.0 (20)
 ===
 
 
-│    1    │ python Lobby.py --episodes 160                  │  1.000  │ 0.00100 │  8-12%   │ First run, pure exploration │
-│    2    │ python Lobby.py --episodes 160 --resume         │  0.950  │ 0.00100 │  8-11%   │ Still heavy exploration     │
-│    3    │ python Lobby.py --episodes 160 --resume         │  0.903  │ 0.00100 │  9-12%   │ Learning basic patterns     │
+│    1    │ python Lobby.py --episodes 160 *                 │  1.000  │ 0.00100 │  8-12%   │ First run, pure exploration │
+│    2    │ python Lobby.py --episodes 160 --resume  *       │  0.950  │ 0.00100 │  8-11%   │ Still heavy exploration     │
+│    3    │ python Lobby.py --episodes 160 --resume  *       │  0.903  │ 0.00100 │  9-12%   │ Learning basic patterns     │
 │    4    │ python Lobby.py --episodes 160 --resume         │  0.858  │ 0.00100 │ 10-14%   │ Combat improvement          │
 │    5    │ python Lobby.py --episodes 160 --resume         │  0.815  │ 0.00100 │ 12-16%   │ Defensive moves learned     │
 │    6    │ python Lobby.py --episodes 160 --resume         │  0.774  │ 0.00100 │ 15-20%   │ Basic combos emerging       │

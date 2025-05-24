@@ -24,10 +24,9 @@ logging.basicConfig(
 logger = logging.getLogger("Lobby")
 
 # Ensure required directories exist
-REQUIRED_DIRS = ["./models", "./logs", "./stats"]
+REQUIRED_DIRS = ["./models", "./logs"]
 for directory in REQUIRED_DIRS:
     os.makedirs(directory, exist_ok=True)
-    logger.info(f"Ensured directory exists: {os.path.abspath(directory)}")
 
 # Configure TensorFlow to use GPU
 physical_devices = tf.config.list_physical_devices("GPU")
@@ -304,7 +303,7 @@ def make_env_worker(env_id, game, state_name, result_queue, command_queue):
 
 
 class VectorizedLobby:
-    """Vectorized lobby using multiple processes like SubprocVecEnv"""
+    """Vectorized lobby using multiple processes"""
 
     def __init__(
         self, game="StreetFighterIISpecialChampionEdition-Genesis", num_envs=16
@@ -312,16 +311,10 @@ class VectorizedLobby:
         self.game = game
         self.num_envs = num_envs
         self.agent = None
-        self.training_stats = {
-            "episodes_run": 0,
-            "total_steps": 0,
-            "wins": 0,
-            "losses": 0,
-            "episode_rewards": [],
-            "session_start_time": time.time(),
-            "session_wins": 0,
-            "session_losses": 0,
-        }
+
+        # Simple win/loss tracking
+        self.wins = 0
+        self.losses = 0
 
         # Initialize processes
         self.processes = []
@@ -399,64 +392,52 @@ class VectorizedLobby:
 
         logger.info(f"All {self.num_envs} environments ready!")
 
-    def execute_parallel_training(self, episodes=10):
-        """Execute training with vectorized environments"""
+    def run_training(self, target_timesteps):
+        """Execute training until target timesteps reached"""
         start_time = time.time()
-        self.training_stats["session_wins"] = 0
-        self.training_stats["session_losses"] = 0
-        self.training_stats["session_start_time"] = time.time()
 
         # Start processes
         self.start_processes()
 
         logger.info(
-            f"Running {episodes} episodes across {self.num_envs} parallel environments"
+            f"Running training for {target_timesteps} timesteps across {self.num_envs} parallel environments"
         )
 
-        episodes_per_env = episodes // self.num_envs
-        remaining_episodes = episodes % self.num_envs
-
-        # Track episodes per environment
-        env_episodes_left = [
-            episodes_per_env + (1 if i < remaining_episodes else 0)
-            for i in range(self.num_envs)
-        ]
         active_envs = set(range(self.num_envs))
         completed_episodes = 0
 
-        # Progress bar
-        pbar = tqdm(total=episodes, desc="Training Episodes")
+        # Progress bar based on timesteps
+        pbar = tqdm(total=target_timesteps, desc="Training Timesteps")
 
         try:
-            while active_envs and completed_episodes < episodes:
+            while self.agent.current_timesteps < target_timesteps and active_envs:
                 # Get actions for all active environments
                 for env_id in list(active_envs):
-                    if env_episodes_left[env_id] > 0:
-                        # Get current observation from last step (simplified for this example)
-                        # In practice, you'd track the current state
-                        dummy_obs = np.zeros((224, 256, 3))  # Placeholder
-                        dummy_info = {
-                            "health": 176,
-                            "enemy_health": 176,
-                            "x_position": 100,
-                            "enemy_x_position": 200,
-                        }
+                    # Get current observation from last step (simplified for this example)
+                    # In practice, you'd track the current state
+                    dummy_obs = np.zeros((224, 256, 3))  # Placeholder
+                    dummy_info = {
+                        "health": 176,
+                        "enemy_health": 176,
+                        "x_position": 100,
+                        "enemy_x_position": 200,
+                    }
 
-                        # Get action from agent
-                        if len(physical_devices) > 0:
-                            with tf.device("/GPU:0"):
-                                action_index, frame_inputs = self.agent.getMove(
-                                    dummy_obs, dummy_info
-                                )
-                        else:
+                    # Get action from agent
+                    if len(physical_devices) > 0:
+                        with tf.device("/GPU:0"):
                             action_index, frame_inputs = self.agent.getMove(
                                 dummy_obs, dummy_info
                             )
-
-                        # Send step command
-                        self.command_queues[env_id].put(
-                            ("step", action_index, frame_inputs)
+                    else:
+                        action_index, frame_inputs = self.agent.getMove(
+                            dummy_obs, dummy_info
                         )
+
+                    # Send step command
+                    self.command_queues[env_id].put(
+                        ("step", action_index, frame_inputs)
+                    )
 
                 # Collect results
                 for env_id in list(active_envs):
@@ -485,44 +466,35 @@ class VectorizedLobby:
                             # Check if episode is done
                             if data["done"] or self.episode_steps[env_id] >= 2500:
                                 # Episode finished
-                                env_episodes_left[env_id] -= 1
                                 completed_episodes += 1
 
                                 # Record episode data
                                 for exp in self.episode_data[env_id]:
                                     self.agent.recordStep(exp)
 
-                                # Update stats
-                                self.training_stats["episodes_run"] += 1
-                                self.training_stats[
-                                    "total_steps"
-                                ] += self.episode_steps[env_id]
-                                self.training_stats["episode_rewards"].append(
-                                    self.episode_rewards[env_id]
-                                )
-
                                 # Determine win/loss
                                 final_player_health = data["info"].get("health", 0)
                                 final_enemy_health = data["info"].get("enemy_health", 0)
                                 if final_player_health > final_enemy_health:
-                                    self.training_stats["wins"] += 1
-                                    self.training_stats["session_wins"] += 1
+                                    self.wins += 1
                                 else:
-                                    self.training_stats["losses"] += 1
-                                    self.training_stats["session_losses"] += 1
+                                    self.losses += 1
 
                                 # Reset for next episode
                                 self.episode_data[env_id] = []
                                 self.episode_rewards[env_id] = 0.0
                                 self.episode_steps[env_id] = 0
 
-                                pbar.update(1)
+                                # Update progress bar
+                                pbar.n = self.agent.current_timesteps
+                                pbar.refresh()
 
-                                # Reset environment if more episodes needed
-                                if env_episodes_left[env_id] > 0:
-                                    self.command_queues[env_id].put(("reset",))
-                                else:
-                                    active_envs.discard(env_id)
+                                # Check if we've reached target timesteps
+                                if self.agent.current_timesteps >= target_timesteps:
+                                    break
+
+                                # Reset environment for next episode
+                                self.command_queues[env_id].put(("reset",))
 
                     except Exception as e:
                         logger.error(f"Error processing environment {env_id}: {e}")
@@ -541,8 +513,8 @@ class VectorizedLobby:
         else:
             self.agent.reviewFight()
 
-        # Print training summary
-        self.print_training_summary(start_time)
+        # Print final results
+        self.print_final_results(start_time)
 
     def close_processes(self):
         """Close all environment processes"""
@@ -567,64 +539,22 @@ class VectorizedLobby:
 
         logger.info("All processes closed")
 
-    def print_training_summary(self, start_time):
-        """Print comprehensive training summary"""
+    def print_final_results(self, start_time):
+        """Print final win rate"""
         total_time = time.time() - start_time
-        win_rate = (
-            (self.training_stats["wins"] / self.training_stats["episodes_run"]) * 100
-            if self.training_stats["episodes_run"] > 0
-            else 0
-        )
+        total_games = self.wins + self.losses
+        win_rate = (self.wins / total_games * 100) if total_games > 0 else 0
 
-        logger.info("\n========= VECTORIZED TRAINING SESSION SUMMARY =========")
-        logger.info(f"Parallel environments used: {self.num_envs}")
-        logger.info(f"Total training steps: {self.training_stats['total_steps']}")
-        logger.info(f"Total episodes: {self.training_stats['episodes_run']}")
-        logger.info(
-            f"Total Win/Loss Record: {self.training_stats['wins']}W - {self.training_stats['losses']}L ({win_rate:.2f}%)"
-        )
-
-        if hasattr(self.agent, "epsilon"):
-            logger.info(f"Current epsilon value: {self.agent.epsilon:.4f}")
-
-        session_win_rate = (
-            (
-                self.training_stats["session_wins"]
-                / (
-                    self.training_stats["session_losses"]
-                    + self.training_stats["session_wins"]
-                )
-            )
-            * 100
-            if (
-                self.training_stats["session_losses"]
-                + self.training_stats["session_wins"]
-            )
-            > 0
-            else 0
-        )
-        logger.info(
-            f"Current session record: {self.training_stats['session_wins']}W - {self.training_stats['session_losses']}L ({session_win_rate:.2f}%)"
-        )
-
-        logger.info(f"Total training time: {total_time:.2f} seconds")
-
-        steps_per_second = (
-            self.training_stats["total_steps"] / total_time if total_time > 0 else 0
-        )
-        logger.info(f"Training efficiency: {steps_per_second:.2f} steps/second")
-
-        episodes_per_second = (
-            self.training_stats["episodes_run"] / total_time if total_time > 0 else 0
-        )
-        logger.info(f"Episode throughput: {episodes_per_second:.2f} episodes/second")
-
-        if hasattr(self.agent, "total_timesteps"):
-            logger.info(
-                f"Agent's accumulated training timesteps: {self.agent.total_timesteps}"
-            )
-
-        logger.info("=====================================================")
+        print("\n" + "=" * 50)
+        print("FINAL TRAINING RESULTS")
+        print("=" * 50)
+        print(f"Total Games: {total_games}")
+        print(f"Wins: {self.wins}")
+        print(f"Losses: {self.losses}")
+        print(f"Win Rate: {win_rate:.2f}%")
+        print(f"Total Timesteps: {self.agent.current_timesteps}")
+        print(f"Training Time: {total_time:.2f} seconds")
+        print("=" * 50)
 
 
 def create_default_state():
@@ -660,32 +590,13 @@ if __name__ == "__main__":
     logger.info("GPU devices: %s", tf.config.list_physical_devices("GPU"))
 
     parser = argparse.ArgumentParser(
-        description="Run the Street Fighter II AI training lobby with 16 vectorized environments"
+        description="Run the Street Fighter II AI training lobby with vectorized environments"
     )
     parser.add_argument(
-        "-e",
-        "--episodes",
+        "--total_timesteps",
         type=int,
-        default=160,
-        help="Total number of episodes to run across all parallel environments",
-    )
-    parser.add_argument(
-        "-re",
-        "--resume",
-        action="store_true",
-        help="Boolean flag for loading a pre-existing model and stats",
-    )
-    parser.add_argument(
-        "--epsilon",
-        type=float,
-        default=1.0,
-        help="Exploration rate (epsilon) for the agent (between 0.0 and 1.0)",
-    )
-    parser.add_argument(
-        "--rl",
-        type=float,
-        default=0.001,
-        help="Learning rate",
+        default=50000,
+        help="Total number of timesteps to train for",
     )
 
     args = parser.parse_args()
@@ -696,11 +607,13 @@ if __name__ == "__main__":
         logger.info("No state files found. Creating a default state...")
         create_default_state()
 
-    # Create agent
-    agent = DeepQAgent(stateSize=60, resume=args.resume)
+    # Create agent with timestep-based scheduling
+    agent = DeepQAgent(stateSize=60, total_timesteps=args.total_timesteps)
 
-    # Use vectorized training like SubprocVecEnv
-    logger.info("Starting vectorized training with 16 separate processes")
+    # Use vectorized training
+    logger.info(
+        f"Starting vectorized training for {args.total_timesteps} timesteps with 16 processes"
+    )
     lobby = VectorizedLobby(num_envs=16)
     lobby.add_agent(agent)
-    lobby.execute_parallel_training(episodes=args.episodes)
+    lobby.run_training(args.total_timesteps)
