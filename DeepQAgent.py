@@ -18,9 +18,10 @@ import logging
 import json
 from enum import Enum
 import time
+import math
 
 
-# Define Moves Enum and MovesDict
+# Define Moves Enum and MovesDict (keep your existing moves code)
 class Moves(Enum):
     """Enum of the set of possible moves the agent is allowed to perform"""
 
@@ -147,7 +148,7 @@ logger = logging.getLogger("Agent")
 
 
 class DeepQAgent:
-    """An agent that implements the Deep Q Neural Network Reinforcement Algorithm to learn Street Fighter 2"""
+    """An agent that implements the Deep Q Neural Network Reinforcement Algorithm with AUTO SCHEDULING"""
 
     OBSERVATION_INDEX = 0
     STATE_INDEX = 1
@@ -160,18 +161,8 @@ class DeepQAgent:
     DEFAULT_DISCOUNT_RATE = 0.98
     WIN_RATE_WINDOW = 10
     WIN_RATE_THRESHOLD = 0.1
-    TIMESTEP_SCALE = 1000000  # Larger scale to reduce timestep impact
+    TIMESTEP_SCALE = 1000000
 
-    # agent
-    # 512 standing
-    # 514 forward
-    # 516 backward
-    # 518 crounch
-    # 520 jump up
-    # 522 jump forward
-    # 524 jump backward
-    # 526 attack animation
-    # 532 special move animation
     stateIndices = {
         512: 0,
         514: 1,
@@ -184,55 +175,54 @@ class DeepQAgent:
         532: 8,
     }
 
-    # enemy
-    # 0 inactive
-    # 528 knock down
-    # 530 recover
-    # 1024 stun
-    # 1026 heavy be hit reaction
-    # 1028 special move be hit reaction
-    # 1030 throw
-    # 1032 victory state
     doneKeys = [0, 528, 530, 1024, 1026, 1028, 1030, 1032]
 
     def __init__(
         self,
         stateSize=60,
         resume=False,
-        epsilon=1.0,
-        rl=0.001,
         name=None,
         moveList=Moves,
         lobby=None,
     ):
-        """Initializes the agent and the underlying neural network"""
+        """Initializes the agent with AUTOMATIC scheduling - no more manual epsilon/lr!"""
         self.name = name or self.__class__.__name__
         self.moveList = moveList
         self.stateSize = stateSize
         self.actionSize = len(moveList)
         self.gamma = DeepQAgent.DEFAULT_DISCOUNT_RATE
         self.lobby = lobby
-        self.learningRate = rl
+
+        # AUTO SCHEDULING PARAMETERS - SUPER SIMPLE!
+        self.initial_epsilon = 1.0
+        self.epsilon = 1.0  # Will be overridden if resuming
+        self.epsilon_min = 0.01
+        self.epsilon_decay = 0.9995  # Slower decay for better exploration
+
+        self.initial_learning_rate = 0.001
+        self.learningRate = 0.001  # Will be overridden if resuming
+        self.lr_min = 0.0001
+        self.lr_decay_every = 10000  # Every 10k steps
+        self.lr_decay_factor = 0.9
+
         self.resume = resume
         self.memory = []
-        self.model = self.initializeNetwork()
 
-        # New memory for high-reward experiences
-        self.high_reward_memory = []
-        self.high_reward_threshold = (
-            0.5  # Threshold to consider an experience as high-reward
-        )
+        # Load stats FIRST to get current epsilon/lr values
+        self.stats = {"total_timesteps": 0, "wins": 0, "losses": 0}
+        if resume:
+            self.loadStats()  # This sets epsilon and learningRate from saved values
 
-        self.batch_size = 512  # Reduced batch size for smaller network
+        self.model = self.initializeNetwork()  # Now uses correct learningRate
+
+        # Simple memory - no complex high-reward stuff
+
+        self.batch_size = 512
         self.target_update_freq = 100
         self.training_counter = 0
 
-        self.epsilon = epsilon
-        self.stats = {"total_timesteps": 0, "wins": 0, "losses": 0}
-
         if resume:
             self.loadModel()
-            self.loadStats()
 
         self.total_timesteps = self.stats["total_timesteps"]
 
@@ -250,29 +240,55 @@ class DeepQAgent:
         self.target_model.set_weights(self.model.get_weights())
 
         # Add these for less frequent saving
-        self.save_stats_interval = 1000  # Save stats every 1000 steps
-        self.save_model_interval = 5000  # Save model every 5000 steps
+        self.save_stats_interval = 1000
+        self.save_model_interval = 5000
         self.last_stats_save = 0
         self.last_model_save = 0
 
-    def initializeNetwork(self):
-        """Initializes a very small Neural Net with Dueling DQN architecture for improved performance"""
-        input_layer = Input(shape=(self.stateSize,))
-        shared = Dense(64, activation="relu")(input_layer)  # Reduced to 64
-        shared = BatchNormalization()(shared)
-        shared = Dropout(0.1)(shared)  # Reduced dropout
-        shared = Dense(32, activation="relu")(shared)  # Reduced to 32
-        shared = BatchNormalization()(shared)
-        shared = Dropout(0.1)(shared)  # Reduced dropout
+    def auto_schedule_params(self):
+        """AUTOMATIC parameter scheduling - called every step"""
 
-        value_stream = Dense(16, activation="relu")(shared)  # Reduced to 16
+        # AUTO EPSILON DECAY - gets more aggressive over time
+        old_epsilon = self.epsilon
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+
+        # AUTO LEARNING RATE DECAY - every 10k steps
+        if self.total_timesteps > 0 and self.total_timesteps % self.lr_decay_every == 0:
+            old_lr = self.learningRate
+            self.learningRate = max(
+                self.lr_min, self.learningRate * self.lr_decay_factor
+            )
+            if old_lr != self.learningRate:
+                # Update the model's learning rate
+                K.set_value(self.model.optimizer.learning_rate, self.learningRate)
+                logger.info(
+                    f"🔄 AUTO: Learning rate {old_lr:.6f} → {self.learningRate:.6f} at step {self.total_timesteps}"
+                )
+
+        # Log epsilon changes every 5000 steps
+        if self.total_timesteps % 5000 == 0 and self.total_timesteps > 0:
+            logger.info(
+                f"🎯 AUTO: Epsilon={self.epsilon:.4f}, LR={self.learningRate:.6f} at step {self.total_timesteps}"
+            )
+
+    def initializeNetwork(self):
+        """Initializes a very small Neural Net with Dueling DQN architecture"""
+        input_layer = Input(shape=(self.stateSize,))
+        shared = Dense(64, activation="relu")(input_layer)
+        shared = BatchNormalization()(shared)
+        shared = Dropout(0.1)(shared)
+        shared = Dense(32, activation="relu")(shared)
+        shared = BatchNormalization()(shared)
+        shared = Dropout(0.1)(shared)
+
+        value_stream = Dense(16, activation="relu")(shared)
         value_stream = BatchNormalization()(value_stream)
-        value_stream = Dense(8, activation="relu")(value_stream)  # Reduced to 8
+        value_stream = Dense(8, activation="relu")(value_stream)
         value_stream = Dense(1)(value_stream)
 
-        advantage_stream = Dense(16, activation="relu")(shared)  # Reduced to 16
+        advantage_stream = Dense(16, activation="relu")(shared)
         advantage_stream = BatchNormalization()(advantage_stream)
-        advantage_stream = Dense(8, activation="relu")(advantage_stream)  # Reduced to 8
+        advantage_stream = Dense(8, activation="relu")(advantage_stream)
         advantage_stream = Dense(self.actionSize)(advantage_stream)
 
         advantage_mean = Lambda(lambda x: K.mean(x, axis=1, keepdims=True))(
@@ -285,14 +301,12 @@ class DeepQAgent:
         model.compile(
             loss=self._huber_loss, optimizer=Adam(learning_rate=self.learningRate)
         )
-        logger.info(
-            "Successfully initialized very small Dueling DQN model (64-32-16-8 neurons)"
-        )
+        logger.info("✅ AUTO-SCHEDULED DQN initialized (64-32-16-8 neurons)")
         return model
 
     @staticmethod
     def _huber_loss(y_true, y_pred, clip_delta=1.0):
-        """Implementation of huber loss to use as the loss function for the model"""
+        """Implementation of huber loss"""
         error = y_true - y_pred
         cond = K.abs(error) <= clip_delta
         squared_loss = 0.5 * K.square(error)
@@ -311,17 +325,38 @@ class DeepQAgent:
                     self.stats.update(loaded_stats)
                     if "total_timesteps" not in self.stats:
                         self.stats["total_timesteps"] = 0
-                logger.info(f"Loaded stats from {stats_path}: {self.stats}")
+
+                    # 🔥 CRITICAL: Restore epsilon and learning rate from saved values
+                    if "current_epsilon" in loaded_stats:
+                        self.epsilon = loaded_stats["current_epsilon"]
+                        logger.info(
+                            f"🎯 RESUMED: Epsilon restored to {self.epsilon:.4f}"
+                        )
+
+                    if "current_learning_rate" in loaded_stats:
+                        self.learningRate = loaded_stats["current_learning_rate"]
+                        logger.info(
+                            f"📚 RESUMED: Learning rate restored to {self.learningRate:.6f}"
+                        )
+
+                logger.info(
+                    f"📊 Loaded stats: Steps={self.stats['total_timesteps']}, Wins={self.stats.get('wins',0)}, Losses={self.stats.get('losses',0)}"
+                )
+
             except Exception as e:
-                logger.error(f"Error loading stats from {stats_path}: {e}")
+                logger.error(f"Error loading stats: {e}")
                 self.stats = {"total_timesteps": 0, "wins": 0, "losses": 0}
+                logger.info("⚠️  Starting fresh due to load error")
         else:
-            logger.info(f"No stats file found at {stats_path}. Using default stats.")
+            logger.info(
+                "🆕 No previous stats found. Starting fresh with epsilon=1.0, lr=0.001"
+            )
             self.stats = {"total_timesteps": 0, "wins": 0, "losses": 0}
+
         self.total_timesteps = self.stats["total_timesteps"]
 
     def saveStats(self):
-        """Save stats to file"""
+        """Save stats including current scheduling parameters"""
         os.makedirs("stats", exist_ok=True)
         stats_path = f"stats/{self.name}_stats.json"
 
@@ -332,17 +367,27 @@ class DeepQAgent:
             wins = self.stats.get("wins", 0)
             losses = self.stats.get("losses", 0)
 
+        # Save current scheduling state
         self.stats.update(
-            {"total_timesteps": self.total_timesteps, "wins": wins, "losses": losses}
+            {
+                "total_timesteps": self.total_timesteps,
+                "wins": wins,
+                "losses": losses,
+                "current_epsilon": self.epsilon,
+                "current_learning_rate": self.learningRate,
+                "initial_epsilon": self.initial_epsilon,
+                "initial_learning_rate": self.initial_learning_rate,
+            }
         )
 
         try:
             with open(stats_path, "w") as f:
                 json.dump(self.stats, f, indent=2)
         except Exception as e:
-            logger.error(f"Error saving stats to {stats_path}: {e}")
+            logger.error(f"Error saving stats: {e}")
 
     def prepareNetworkInputs(self, step):
+        """Same as before - prepare network inputs"""
         feature_vector = []
         max_health = 100.0
         screen_width = 263.0
@@ -392,19 +437,11 @@ class DeepQAgent:
         return feature_vector
 
     def prepareForNextFight(self):
-        """Reset memory for a new fight"""
-        # Instead of completely clearing memory, keep some high-reward experiences
-        if len(self.high_reward_memory) > 0:
-            logger.info(
-                f"Keeping {len(self.high_reward_memory)} high-reward experiences for continued learning"
-            )
-            # Start with high-reward memories and add more as needed during play
-            self.memory = self.high_reward_memory.copy()
-        else:
-            self.memory = []
+        """Simple memory reset"""
+        self.memory = []
 
     def getRandomMove(self, info):
-        """Get a random move from the available move list"""
+        """Get a random move"""
         move, frameInputs = Moves.getRandomMove()
         if Moves.isDirectionalMove(move):
             facing_right = info.get("x_position", 100) < info.get(
@@ -414,7 +451,7 @@ class DeepQAgent:
         return move.value, frameInputs
 
     def convertMoveToFrameInputs(self, move, info):
-        """Convert a move to a list of button arrays."""
+        """Convert move to frame inputs"""
         frameInputs = Moves.getMoveInputs(move)
         if Moves.isDirectionalMove(move):
             facing_right = info.get("x_position", 100) < info.get(
@@ -424,14 +461,11 @@ class DeepQAgent:
         return frameInputs
 
     def getMove(self, obs, info):
-        """Returns a set of button inputs generated by the Agent's network"""
+        """Returns button inputs with AUTO SCHEDULING"""
         start_time = time.time()
 
         if random.random() < self.epsilon:
             move_index, frameInputs = self.getRandomMove(info)
-            logger.debug(
-                f"Random move selected (exploration), epsilon: {self.epsilon:.4f}"
-            )
             return move_index, frameInputs
 
         stateData = self.prepareNetworkInputs(info)
@@ -439,125 +473,74 @@ class DeepQAgent:
         move_index = np.argmax(predictedRewards)
         move = list(self.moveList)[move_index]
         frameInputs = self.convertMoveToFrameInputs(move, info)
-        move_time = (time.time() - start_time) * 1000
-        logger.debug(
-            f"Predicted move selected in {move_time:.2f}ms, epsilon: {self.epsilon:.4f}"
-        )
+
         return move_index, frameInputs
 
     def recordStep(self, step):
-        """Records a step with a simple reward structure and identifies high-reward experiences"""
-        # Create a mutable copy of the step if it's a tuple
+        """Simple step recording with AUTO SCHEDULING"""
         if isinstance(step, tuple):
             step = list(step)
 
-        # normalize rewards
+        # Clip rewards
         if step[self.REWARD_INDEX] != 0:
             step[self.REWARD_INDEX] = np.clip(step[self.REWARD_INDEX], -10, 10)
 
         # Add to memory
         self.memory.append(step)
 
-        # Check if this is a high-reward experience
-        if step[self.REWARD_INDEX] > self.high_reward_threshold:
-            # Add to high-reward memory
-            self.high_reward_memory.append(step)
-            logger.debug(
-                f"Added high-reward experience with reward {step[self.REWARD_INDEX]:.2f}"
-            )
-
-            # Ensure high_reward_memory doesn't get too large
-            if len(self.high_reward_memory) > DeepQAgent.MAX_DATA_LENGTH // 2:
-                # Sort by reward and keep the highest
-                self.high_reward_memory.sort(
-                    key=lambda x: x[self.REWARD_INDEX], reverse=True
-                )
-                self.high_reward_memory = self.high_reward_memory[
-                    : DeepQAgent.MAX_DATA_LENGTH // 4
-                ]
-                logger.debug(
-                    f"Pruned high-reward memory to {len(self.high_reward_memory)} items"
-                )
-
-        # Ensure memory doesn't get too large
+        # Keep memory size manageable
         if len(self.memory) > DeepQAgent.MAX_DATA_LENGTH:
             self.memory.pop(0)
 
         self.total_timesteps += 1
-        # Only save stats occasionally, not every frame!
+
+        # 🚀 AUTO SCHEDULING HAPPENS HERE!
+        self.auto_schedule_params()
+
+        # Save stats occasionally
         if self.total_timesteps - self.last_stats_save >= self.save_stats_interval:
             self.saveStats()
             self.last_stats_save = self.total_timesteps
 
     def trainNetwork(self, data, model):
-        """Runs through a training epoch reviewing the training data with sorted replay"""
-        if not data:
+        """Simple training - just random sampling from memory"""
+        if not data or len(data) < 32:
             return model
 
-        # Sort data by reward (highest first) to prioritize important experiences
-        sorted_data = sorted(data, key=lambda x: x[self.REWARD_INDEX], reverse=True)
+        # Simple random sampling
+        batch_size = min(self.batch_size, len(data))
+        minibatch = random.sample(data, batch_size)
 
-        # Take a mix of high-reward and random experiences
-        high_reward_count = min(len(sorted_data), self.batch_size // 2)
-        high_reward_samples = sorted_data[:high_reward_count]
-
-        # Fill the rest with random samples to maintain diversity
-        random_count = self.batch_size - high_reward_count
-        if len(sorted_data) > high_reward_count:
-            random_samples = random.sample(
-                sorted_data[high_reward_count:],
-                min(len(sorted_data) - high_reward_count, random_count),
-            )
-        else:
-            random_samples = []
-
-        # Combine samples
-        minibatch = high_reward_samples + random_samples
-
-        # state size and action size
-        states = np.zeros(
-            (len(minibatch), self.stateSize)
-        )  # Fixed: use tuple for shape
-        targets = np.zeros(
-            (len(minibatch), self.actionSize)
-        )  # Fixed: use tuple for shape
+        states = np.zeros((len(minibatch), self.stateSize))
+        targets = np.zeros((len(minibatch), self.actionSize))
 
         for i, (state, action, reward, done, next_state) in enumerate(minibatch):
             if isinstance(action, dict):
                 action = action.get("value", 0)
-
-            # pick action
             action = min(max(0, action), self.actionSize - 1)
 
-            # store state
             states[i] = state
-
             target = model.predict(state, verbose=0)[0]
 
             if not done:
-                # use target network for more stable learning
                 next_q_values = self.target_model.predict(next_state, verbose=0)[0]
                 target[action] = reward + self.gamma * np.max(next_q_values)
             else:
                 target[action] = reward
-
-            # store target
             targets[i] = target
 
-        # out loop
-        history = model.fit(
-            states, targets, epochs=1, verbose=0, batch_size=self.batch_size
-        )
+        # Train the model
+        model.fit(states, targets, epochs=1, verbose=0, batch_size=batch_size)
 
         self.training_counter += 1
         if self.training_counter % self.target_update_freq == 0:
             self.target_model.set_weights(model.get_weights())
-            logger.info("target network updated")
+            logger.info("🎯 Target network updated")
 
         return model
 
     def reviewFight(self):
-        """Review and learn from the previous fight, then save the model"""
+        """Review fight and train"""
         if self.memory:
             data = []
             for step in self.memory:
@@ -568,47 +551,39 @@ class DeepQAgent:
                 next_state = self.prepareNetworkInputs(step[self.NEXT_STATE_INDEX])
                 data.append([state, action, reward, done, next_state])
 
-            # Train twice for better learning
-            for _ in range(1):
-                self.model = self.trainNetwork(data, self.model)
+            self.model = self.trainNetwork(data, self.model)
 
-        # Only save model occasionally
         if self.total_timesteps - self.last_model_save >= self.save_model_interval:
             self.saveModel()
             self.last_model_save = self.total_timesteps
-            logger.info(f"Model saved at timestep {self.total_timesteps}")
+            logger.info(f"💾 Model saved at timestep {self.total_timesteps}")
 
     def saveModel(self):
-        """Save model weights to file with correct filename format"""
+        """Save model"""
         try:
             os.makedirs("models", exist_ok=True)
             model_path = f"models/{self.name}Model.weights.h5"
             self.model.save_weights(model_path)
             if os.path.exists(model_path):
                 file_size = os.path.getsize(model_path)
-                logger.info(
-                    f"Model saved successfully to {model_path} (size: {file_size} bytes)"
-                )
-            else:
-                logger.error(
-                    f"Failed to save model: File {model_path} does not exist after save attempt"
-                )
+                logger.info(f"💾 Model saved to {model_path} ({file_size} bytes)")
             self.saveStats()
         except Exception as e:
-            logger.error(f"Error saving model: {str(e)}")
-            import traceback
-
-            logger.error(traceback.format_exc())
+            logger.error(f"Error saving model: {e}")
 
     def loadModel(self):
-        """Load model weights from file if available"""
-        model_path = f"models/{self.name}Model.h5"
+        """Load model"""
+        model_path = f"models/{self.name}Model.weights.h5"
         if os.path.exists(model_path):
-            self.model.load_weights(model_path)
-            logger.info(f"Loaded model from {model_path}")
-            self.target_model.set_weights(self.model.get_weights())
+            try:
+                self.model.load_weights(model_path)
+                logger.info(f"📂 Loaded model from {model_path}")
+                self.target_model.set_weights(self.model.get_weights())
+            except Exception as e:
+                logger.error(f"Error loading model: {e}")
 
 
+# Register custom loss function
 from tensorflow.keras.utils import get_custom_objects
 
 get_custom_objects().update({"_huber_loss": DeepQAgent._huber_loss})

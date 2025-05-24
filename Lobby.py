@@ -697,12 +697,7 @@ if __name__ == "__main__":
         create_default_state()
 
     # Create agent
-    agent = DeepQAgent(
-        stateSize=60,
-        resume=args.resume,
-        epsilon=args.epsilon,
-        rl=args.rl,
-    )
+    agent = DeepQAgent(stateSize=60, resume=args.resume)
 
     # Use vectorized training like SubprocVecEnv
     logger.info("Starting vectorized training with 16 separate processes")
