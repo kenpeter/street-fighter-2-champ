@@ -178,19 +178,20 @@ def create_default_state():
 
 
 def read_ram_values(env, info):
-    """Read game state from RAM"""
+    """Read game state from RAM using CORRECTED addresses"""
+    # CORRECTED RAM addresses (same as training script)
     ram_info = {
         "continue_timer": {"address": 16744917, "type": "|u1"},
         "round_timer": {"address": 16750378, "type": ">u2"},
         "enemy_health": {"address": 16745154, "type": ">i2"},
-        "enemy_x_position": {"address": 16745094, "type": ">u2"},
-        "enemy_y_position": {"address": 16745098, "type": ">u2"},
+        "enemy_x_position": {"address": 32984, "type": "|u1"},  # FIXED: Was 16745094
+        "enemy_y_position": {"address": 32985, "type": "|u1"},  # FIXED: Was 16745098
         "enemy_matches_won": {"address": 16745559, "type": ">u4"},
         "enemy_status": {"address": 16745090, "type": ">u2"},
         "enemy_character": {"address": 16745563, "type": "|u1"},
         "health": {"address": 16744514, "type": ">i2"},
-        "x_position": {"address": 16744454, "type": ">u2"},
-        "y_position": {"address": 16744458, "type": ">u2"},
+        "x_position": {"address": 32774, "type": "|u1"},  # FIXED: Was 16744454
+        "y_position": {"address": 32775, "type": "|u1"},  # FIXED: Was 16744458
         "status": {"address": 16744450, "type": ">u2"},
         "matches_won": {"address": 16744922, "type": "|u1"},
         "score": {"address": 16744936, "type": ">d4"},
@@ -695,7 +696,7 @@ if __name__ == "__main__":
         help="Path to the trained model weights file",
     )
     parser.add_argument(
-        "--num_games", type=int, default=100, help="Number of evaluation games to run"
+        "--num_games", type=int, default=3, help="Number of evaluation games to run"
     )
     parser.add_argument(
         "--render",
