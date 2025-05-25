@@ -12,6 +12,10 @@ import random
 from DeepQAgent import DeepQAgent, Moves
 from enum import Enum
 
+# Set random seed for different behavior each game
+random.seed(time.time())
+np.random.seed(int(time.time()) % 2**32)
+
 
 # 12-action moves (matching your trained model)
 class Moves12(Enum):
@@ -56,12 +60,23 @@ class SimpleAgent:
         print(f"✅ Loaded model: {model_path}")
 
     def get_action(self, info):
+        # Add some randomness for variety between games
+        if random.random() < 0.1:  # 10% chance for random action
+            action_index = random.randint(0, 11)
+            move = list(Moves12)[action_index]
+            frame_inputs = Moves12Dict[move]
+            return action_index, frame_inputs, move.name + " (random)"
+
         # Get Q-values
         state_data = self.agent.prepareNetworkInputs(info)
         q_values = self.agent.model.predict(state_data, verbose=0)[0]
 
-        # Pick best action
-        action_index = np.argmax(q_values)
+        # Add some noise to Q-values for variety
+        noise = np.random.normal(0, 0.1, q_values.shape)
+        q_values_noisy = q_values + noise
+
+        # Pick best action from noisy Q-values
+        action_index = np.argmax(q_values_noisy)
         move = list(Moves12)[action_index]
         frame_inputs = Moves12Dict[move]
 
@@ -70,6 +85,12 @@ class SimpleAgent:
 
 def play_game(agent, state_name, game_num):
     print(f"\n🎮 GAME {game_num}: Using state '{state_name}'")
+
+    # Set different random seed for each game
+    game_seed = int(time.time() * 1000) + game_num
+    random.seed(game_seed)
+    np.random.seed(game_seed % 2**32)
+    print(f"🎲 Game seed: {game_seed}")
 
     # Create environment with rendering
     env = retro.make("StreetFighterIISpecialChampionEdition-Genesis", players=1)
@@ -84,6 +105,17 @@ def play_game(agent, state_name, game_num):
         print(f"✅ Loaded state: {state_name}")
     else:
         print(f"⚠️  State not found, using default")
+
+    # Initialize with some random steps to create variety
+    print("🔄 Randomizing start position...")
+    for _ in range(random.randint(5, 25)):  # 5-25 random steps
+        random_action = [0] * 12
+        if random.random() < 0.3:  # 30% chance to do something
+            button_idx = random.randint(0, 11)
+            random_action[button_idx] = 1
+        env.step(random_action)
+        env.render()
+        time.sleep(0.01)
 
     # Initialize
     step_count = 0

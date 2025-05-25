@@ -119,9 +119,16 @@ class DeepQAgent:
         self.total_timesteps_target = total_timesteps
         self.current_timesteps = 0
 
-        # CORRECTED: Use smaller learning rates like the PPO version
+        # MINIMAL FIX: Add action memory to prevent loops
+        self.action_memory = []
+        self.action_memory_size = 5
+        self.loop_counter = 0
+        self.force_variety_interval = 100
+        self.step_counter = 0
+
+        # CORRECTED: Use smaller learning rates like the PPO version + higher epsilon for variety
         self.initial_epsilon = 1.0
-        self.epsilon_min = 0.01
+        self.epsilon_min = 0.15  # INCREASED from 0.01 for more variety
         self.epsilon = self.initial_epsilon
 
         self.initial_learning_rate = 2.5e-4  # Same as PPO start
@@ -269,6 +276,9 @@ class DeepQAgent:
     def prepareForNextFight(self):
         """Reset memory for next fight"""
         self.memory = []
+        # MINIMAL FIX: Reset action memory between fights
+        self.action_memory = []
+        self.loop_counter = 0
 
     def getRandomMove(self, info):
         """Get a random move from reduced action space"""
@@ -281,16 +291,55 @@ class DeepQAgent:
         return frameInputs
 
     def getMove(self, obs, info):
-        """Returns button inputs with epsilon-greedy action selection"""
-        if random.random() < self.epsilon:
+        """Returns button inputs with epsilon-greedy action selection + loop prevention"""
+        self.step_counter += 1
+
+        # MINIMAL FIX: Force variety every 100 steps
+        if self.step_counter % self.force_variety_interval == 0:
             move_index, frameInputs = self.getRandomMove(info)
+            self.action_memory.append(move_index)
+            if len(self.action_memory) > self.action_memory_size:
+                self.action_memory.pop(0)
             return move_index, frameInputs
 
-        stateData = self.prepareNetworkInputs(info)
-        predictedRewards = self.model.predict(stateData, verbose=0)[0]
-        move_index = np.argmax(predictedRewards)
-        move = list(self.moveList)[move_index]
-        frameInputs = self.convertMoveToFrameInputs(move, info)
+        # MINIMAL FIX: Check for loops (same action repeated)
+        if len(self.action_memory) >= 3 and len(set(self.action_memory[-3:])) == 1:
+            self.loop_counter += 1
+            if self.loop_counter >= 3:  # Break loop after 3 repetitions
+                move_index, frameInputs = self.getRandomMove(info)
+                self.loop_counter = 0
+                self.action_memory.append(move_index)
+                if len(self.action_memory) > self.action_memory_size:
+                    self.action_memory.pop(0)
+                return move_index, frameInputs
+
+        # Regular epsilon-greedy selection
+        if random.random() < self.epsilon:
+            move_index, frameInputs = self.getRandomMove(info)
+        else:
+            stateData = self.prepareNetworkInputs(info)
+            predictedRewards = self.model.predict(stateData, verbose=0)[0]
+
+            # MINIMAL FIX: Penalize recently used actions
+            for recent_action in self.action_memory:
+                if recent_action < len(predictedRewards):
+                    predictedRewards[recent_action] *= 0.5  # Reduce preference
+
+            move_index = np.argmax(predictedRewards)
+            move = list(self.moveList)[move_index]
+            frameInputs = self.convertMoveToFrameInputs(move, info)
+
+        # Update action memory
+        self.action_memory.append(move_index)
+        if len(self.action_memory) > self.action_memory_size:
+            self.action_memory.pop(0)
+
+        # Reset loop counter if action is different
+        if (
+            len(self.action_memory) >= 2
+            and self.action_memory[-1] != self.action_memory[-2]
+        ):
+            self.loop_counter = 0
 
         return move_index, frameInputs
 
