@@ -14,6 +14,16 @@ import numpy as np
 from multiprocessing import Process, Queue, Manager
 import threading
 from queue import Queue as ThreadQueue
+import warnings
+
+# SUPPRESS OVERFLOW WARNINGS GLOBALLY
+warnings.filterwarnings(
+    "ignore", category=RuntimeWarning, message="overflow encountered in scalar subtract"
+)
+warnings.filterwarnings(
+    "ignore", category=RuntimeWarning, message="overflow encountered*"
+)
+np.seterr(over="ignore")  # Ignore numpy overflow errors completely
 
 # Configure logging
 logging.basicConfig(
@@ -264,13 +274,19 @@ def make_env_worker(env_id, game, state_name, result_queue, command_queue):
                             # NEW: Add movement reward to encourage closing distance
                             movement_reward = 0.0
                             try:
-                                # Get positions (using corrected addresses)
+                                # Get positions (using corrected addresses) with overflow protection
                                 prev_player_x = last_info.get("x_position", 100)
                                 curr_player_x = final_info.get("x_position", 100)
                                 prev_enemy_x = last_info.get("enemy_x_position", 200)
                                 curr_enemy_x = final_info.get("enemy_x_position", 200)
 
-                                # Calculate distance change
+                                # Convert to safe integers and clamp to prevent overflow
+                                prev_player_x = int(np.clip(prev_player_x, 0, 400))
+                                curr_player_x = int(np.clip(curr_player_x, 0, 400))
+                                prev_enemy_x = int(np.clip(prev_enemy_x, 0, 400))
+                                curr_enemy_x = int(np.clip(curr_enemy_x, 0, 400))
+
+                                # Calculate distance change safely
                                 prev_distance = abs(prev_enemy_x - prev_player_x)
                                 curr_distance = abs(curr_enemy_x - curr_player_x)
 
@@ -286,7 +302,7 @@ def make_env_worker(env_id, game, state_name, result_queue, command_queue):
                                 if curr_distance < 30:  # Very close range
                                     movement_reward += 0.02  # Bonus for staying close
 
-                            except (ValueError, TypeError):
+                            except (ValueError, TypeError, OverflowError):
                                 movement_reward = (
                                     0.0  # Fallback if position data is bad
                                 )
@@ -634,7 +650,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--total_timesteps",
         type=int,
-        default=1000000,
+        default=50000,
         help="Total number of timesteps to train for",
     )
 
