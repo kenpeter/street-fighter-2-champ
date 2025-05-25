@@ -650,7 +650,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--total_timesteps",
         type=int,
-        default=50000,
+        default=1000000,
         help="Total number of timesteps to train for",
     )
 
