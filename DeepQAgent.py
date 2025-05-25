@@ -212,6 +212,11 @@ class DeepQAgent:
         self.target_update_freq = 100
         self.training_counter = 0
 
+        # Force model saving setup
+        self.save_model_interval = 400000  # Save every 400,000 timesteps
+        self.last_model_save = 0
+        self.models_saved = 0
+
         logger.info(f"Agent initialized for {total_timesteps} timesteps")
 
     def update_parameters(self):
@@ -332,9 +337,18 @@ class DeepQAgent:
         """Get a random move"""
         move, frameInputs = Moves.getRandomMove()
         if Moves.isDirectionalMove(move):
-            facing_right = info.get("x_position", 100) < info.get(
-                "enemy_x_position", 200
-            )
+            # Fixed: Handle position data safely
+            player_x = info.get("x_position", 100)
+            enemy_x = info.get("enemy_x_position", 200)
+
+            # Safe comparison with overflow protection
+            try:
+                player_x = np.clip(int(player_x), 0, 400)
+                enemy_x = np.clip(int(enemy_x), 0, 400)
+                facing_right = player_x < enemy_x
+            except (ValueError, OverflowError, TypeError):
+                facing_right = True  # Default facing direction
+
             frameInputs = frameInputs[0 if facing_right else 1]
         return move.value, frameInputs
 
@@ -342,9 +356,18 @@ class DeepQAgent:
         """Convert move to frame inputs"""
         frameInputs = Moves.getMoveInputs(move)
         if Moves.isDirectionalMove(move):
-            facing_right = info.get("x_position", 100) < info.get(
-                "enemy_x_position", 200
-            )
+            # Fixed: Handle position data safely
+            player_x = info.get("x_position", 100)
+            enemy_x = info.get("enemy_x_position", 200)
+
+            # Safe comparison with overflow protection
+            try:
+                player_x = np.clip(int(player_x), 0, 400)
+                enemy_x = np.clip(int(enemy_x), 0, 400)
+                facing_right = player_x < enemy_x
+            except (ValueError, OverflowError, TypeError):
+                facing_right = True  # Default facing direction
+
             frameInputs = frameInputs[0 if facing_right else 1]
         return frameInputs
 
@@ -410,8 +433,18 @@ class DeepQAgent:
                 target[action] = reward
             targets[i] = target
 
-        # Update optimizer learning rate
-        K.set_value(model.optimizer.learning_rate, self.learningRate)
+        # Fixed learning rate update with proper error handling
+        try:
+            # Method 1: Direct assignment (newer TensorFlow)
+            if hasattr(model.optimizer, "learning_rate"):
+                if hasattr(model.optimizer.learning_rate, "assign"):
+                    model.optimizer.learning_rate.assign(float(self.learningRate))
+                else:
+                    # Method 2: Using K.set_value (older TensorFlow)
+                    K.set_value(model.optimizer.learning_rate, float(self.learningRate))
+        except (AttributeError, TypeError, ValueError) as e:
+            # Method 3: Fallback - just continue without updating learning rate
+            pass  # Removed logger.warning to reduce noise
 
         # Train the model
         model.fit(states, targets, epochs=1, verbose=0, batch_size=batch_size)
@@ -423,18 +456,112 @@ class DeepQAgent:
         return model
 
     def reviewFight(self):
-        """Review fight and train on collected experience"""
+        """Review fight and train on collected experience with better error handling"""
         if self.memory:
-            data = []
-            for step in self.memory:
-                state = self.prepareNetworkInputs(step[self.STATE_INDEX])
-                action = step[self.ACTION_INDEX]
-                reward = step[self.REWARD_INDEX]
-                done = step[self.DONE_INDEX]
-                next_state = self.prepareNetworkInputs(step[self.NEXT_STATE_INDEX])
-                data.append([state, action, reward, done, next_state])
+            try:
+                data = []
+                for step in self.memory:
+                    state = self.prepareNetworkInputs(step[self.STATE_INDEX])
+                    action = step[self.ACTION_INDEX]
+                    reward = step[self.REWARD_INDEX]
+                    done = step[self.DONE_INDEX]
+                    next_state = self.prepareNetworkInputs(step[self.NEXT_STATE_INDEX])
+                    data.append([state, action, reward, done, next_state])
 
-            self.model = self.trainNetwork(data, self.model)
+                self.model = self.trainNetwork(data, self.model)
+
+                # ALWAYS save model at the end of script run (reviewFight is called at end)
+                logger.info("💾 Script ending - saving final model...")
+                success = self.saveModel()
+                if success:
+                    logger.info(f"✅ Final model saved successfully!")
+                else:
+                    logger.error(f"❌ Final model save failed!")
+
+            except Exception as e:
+                logger.error(f"❌ Error in reviewFight: {e}")
+                logger.info("💾 Attempting emergency model save due to error...")
+                try:
+                    self.saveModel()
+                except Exception as save_error:
+                    logger.error(f"❌ Emergency save failed: {save_error}")
+
+    def recordStep(self, step):
+        """Record a step in memory and save model periodically"""
+        if isinstance(step, tuple):
+            step = list(step)
+
+        # Clip rewards
+        if step[self.REWARD_INDEX] != 0:
+            step[self.REWARD_INDEX] = np.clip(step[self.REWARD_INDEX], -10, 10)
+
+        # Add to memory
+        self.memory.append(step)
+
+        # Keep memory size manageable
+        if len(self.memory) > DeepQAgent.MAX_DATA_LENGTH:
+            self.memory.pop(0)
+
+        self.current_timesteps += 1
+
+        # Update parameters based on progress
+        self.update_parameters()
+
+        # FORCE MODEL SAVING DURING TRAINING (not just at end!)
+        if self.current_timesteps - self.last_model_save >= self.save_model_interval:
+            logger.info(f"💾 Auto-saving model at timestep {self.current_timesteps}")
+            success = self.saveModel()
+            if success:
+                self.last_model_save = self.current_timesteps
+                self.models_saved += 1
+                logger.info(f"✅ Model #{self.models_saved} saved successfully!")
+            else:
+                logger.error(
+                    f"❌ Model save failed at timestep {self.current_timesteps}"
+                )
+
+    def saveModel(self):
+        """Save model using only weights format"""
+        logger.info(f"💾 Attempting to save model...")
+
+        try:
+            os.makedirs("models", exist_ok=True)
+            logger.info(f"📁 Models directory ready: {os.path.abspath('models')}")
+
+            # Only save weights in .h5 format
+            weights_path = f"models/DeepQAgentModel.weights.h5"
+            try:
+                logger.info(f"🔄 Saving model weights to: {weights_path}")
+                self.model.save_weights(weights_path)
+
+                if os.path.exists(weights_path):
+                    file_size = os.path.getsize(weights_path)
+                    logger.info(
+                        f"✅ SUCCESS! Model weights saved: {weights_path} ({file_size:,} bytes)"
+                    )
+                    return True
+                else:
+                    logger.error(f"❌ Weights file not created: {weights_path}")
+                    return False
+
+            except Exception as e:
+                logger.error(f"❌ Model weights save failed: {e}")
+
+                # Debug info
+                logger.info(f"🔍 Debug info:")
+                logger.info(f"   Current directory: {os.getcwd()}")
+                logger.info(f"   Models dir exists: {os.path.exists('models')}")
+                logger.info(
+                    f"   Models dir writable: {os.access('models', os.W_OK) if os.path.exists('models') else 'N/A'}"
+                )
+                logger.info(f"   Model type: {type(self.model)}")
+                logger.info(f"   Model built: {self.model.built}")
+
+                return False
+
+        except Exception as e:
+            logger.error(f"❌ CRITICAL ERROR in saveModel: {e}")
+            return False
 
 
 # Register custom loss function
