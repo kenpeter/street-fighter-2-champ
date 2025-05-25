@@ -302,6 +302,27 @@ def make_env_worker(env_id, game, state_name, result_queue, command_queue):
                                 if curr_distance < 30:  # Very close range
                                     movement_reward += 0.02  # Bonus for staying close
 
+                                # NEW: Add attack bonus when close to enemy
+                                # Check if this was an attack action (we need to track the action taken)
+                                # Since we don't have direct access to the action here, we'll use a heuristic:
+                                # If enemy took damage AND we're close, assume we attacked successfully
+                                if (
+                                    curr_distance < 50  # Close enough to attack
+                                    and prev_opponent_health
+                                    > curr_opponent_health  # Enemy took damage
+                                    and prev_player_health == curr_player_health
+                                ):  # We didn't take damage
+                                    movement_reward += 0.20  # BIG bonus for successful close-range attack!
+
+                                # Bonus for any enemy damage when close (even if we also took damage)
+                                elif (
+                                    curr_distance < 50
+                                    and prev_opponent_health > curr_opponent_health
+                                ):
+                                    movement_reward += (
+                                        0.10  # Medium bonus for trading damage up close
+                                    )
+
                             except (ValueError, TypeError, OverflowError):
                                 movement_reward = (
                                     0.0  # Fallback if position data is bad
