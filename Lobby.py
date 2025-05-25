@@ -228,12 +228,15 @@ def make_env_worker(env_id, game, state_name, result_queue, command_queue):
                     prev_player_health = last_info.get("health", full_hp)
                     prev_opponent_health = last_info.get("enemy_health", full_hp)
 
+                    featureReward = 0
                     for frame in frame_inputs:
                         step_result = env.step(frame)
                         if len(step_result) == 4:
-                            obs, _, done, info = step_result
+                            obs, featureReward, done, info = step_result
                         else:
-                            obs, _, terminated, truncated, info = step_result
+                            obs, featureReward, terminated, truncated, info = (
+                                step_result
+                            )
                             done = terminated or truncated
 
                         info = read_ram_values(info)
@@ -271,64 +274,9 @@ def make_env_worker(env_id, game, state_name, result_queue, command_queue):
                                 prev_opponent_health - curr_opponent_health
                             ) - (prev_player_health - curr_player_health)
 
-                            # NEW: Add movement reward to encourage closing distance
-                            movement_reward = 0.0
-                            try:
-                                # Get positions (using corrected addresses) with overflow protection
-                                prev_player_x = last_info.get("x_position", 100)
-                                curr_player_x = final_info.get("x_position", 100)
-                                prev_enemy_x = last_info.get("enemy_x_position", 200)
-                                curr_enemy_x = final_info.get("enemy_x_position", 200)
+                            total_reward = damage_reward
 
-                                # Convert to safe integers and clamp to prevent overflow
-                                prev_player_x = int(np.clip(prev_player_x, 0, 400))
-                                curr_player_x = int(np.clip(curr_player_x, 0, 400))
-                                prev_enemy_x = int(np.clip(prev_enemy_x, 0, 400))
-                                curr_enemy_x = int(np.clip(curr_enemy_x, 0, 400))
-
-                                # Calculate distance change safely
-                                prev_distance = abs(prev_enemy_x - prev_player_x)
-                                curr_distance = abs(curr_enemy_x - curr_player_x)
-
-                                # Reward for moving closer to enemy
-                                if curr_distance < prev_distance:
-                                    movement_reward = 0.05  # Small positive reward for closing distance
-                                elif curr_distance > prev_distance:
-                                    movement_reward = (
-                                        -0.02
-                                    )  # Small penalty for moving away
-
-                                # Extra reward for being in close combat range
-                                if curr_distance < 30:  # Very close range
-                                    movement_reward += 0.02  # Bonus for staying close
-
-                                # NEW: Add attack bonus when close to enemy
-                                # Check if this was an attack action (we need to track the action taken)
-                                # Since we don't have direct access to the action here, we'll use a heuristic:
-                                # If enemy took damage AND we're close, assume we attacked successfully
-                                if (
-                                    curr_distance < 50  # Close enough to attack
-                                    and prev_opponent_health
-                                    > curr_opponent_health  # Enemy took damage
-                                    and prev_player_health == curr_player_health
-                                ):  # We didn't take damage
-                                    movement_reward += 0.20  # BIG bonus for successful close-range attack!
-
-                                # Bonus for any enemy damage when close (even if we also took damage)
-                                elif (
-                                    curr_distance < 50
-                                    and prev_opponent_health > curr_opponent_health
-                                ):
-                                    movement_reward += (
-                                        0.10  # Medium bonus for trading damage up close
-                                    )
-
-                            except (ValueError, TypeError, OverflowError):
-                                movement_reward = (
-                                    0.0  # Fallback if position data is bad
-                                )
-
-                            total_reward = damage_reward + movement_reward
+                        total_reward = total_reward + featureReward
 
                     # Send step result
                     step_data = {

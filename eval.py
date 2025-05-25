@@ -692,7 +692,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_path",
         type=str,
-        default="models/DeepQAgentModel_200000.weights.h5",
+        default="models/DeepQAgentModel_100000.weights.h5",
         help="Path to the trained model weights file",
     )
     parser.add_argument(
