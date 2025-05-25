@@ -213,7 +213,7 @@ class DeepQAgent:
         self.training_counter = 0
 
         # Force model saving setup
-        self.save_model_interval = 200000  # Save every 400,000 timesteps
+        self.save_model_interval = 100000  # Save every 400,000 timesteps
         self.last_model_save = 0
         self.models_saved = 0
 
