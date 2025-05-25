@@ -256,9 +256,42 @@ def make_env_worker(env_id, game, state_name, result_queue, command_queue):
                             )
                             done = True
                         else:
-                            total_reward = reward_coeff * (
+                            # Original damage-based reward
+                            damage_reward = reward_coeff * (
                                 prev_opponent_health - curr_opponent_health
                             ) - (prev_player_health - curr_player_health)
+
+                            # NEW: Add movement reward to encourage closing distance
+                            movement_reward = 0.0
+                            try:
+                                # Get positions (using corrected addresses)
+                                prev_player_x = last_info.get("x_position", 100)
+                                curr_player_x = final_info.get("x_position", 100)
+                                prev_enemy_x = last_info.get("enemy_x_position", 200)
+                                curr_enemy_x = final_info.get("enemy_x_position", 200)
+
+                                # Calculate distance change
+                                prev_distance = abs(prev_enemy_x - prev_player_x)
+                                curr_distance = abs(curr_enemy_x - curr_player_x)
+
+                                # Reward for moving closer to enemy
+                                if curr_distance < prev_distance:
+                                    movement_reward = 0.05  # Small positive reward for closing distance
+                                elif curr_distance > prev_distance:
+                                    movement_reward = (
+                                        -0.02
+                                    )  # Small penalty for moving away
+
+                                # Extra reward for being in close combat range
+                                if curr_distance < 30:  # Very close range
+                                    movement_reward += 0.02  # Bonus for staying close
+
+                            except (ValueError, TypeError):
+                                movement_reward = (
+                                    0.0  # Fallback if position data is bad
+                                )
+
+                            total_reward = damage_reward + movement_reward
 
                     # Send step result
                     step_data = {

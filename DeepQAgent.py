@@ -529,7 +529,7 @@ class DeepQAgent:
             logger.info(f"📁 Models directory ready: {os.path.abspath('models')}")
 
             # Only save weights in .h5 format
-            weights_path = f"models/DeepQAgentModel.weights.h5"
+            weights_path = f"models/DeepQAgentModel_{self.current_timesteps}.weights.h5"
             try:
                 logger.info(f"🔄 Saving model weights to: {weights_path}")
                 self.model.save_weights(weights_path)

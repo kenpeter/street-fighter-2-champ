@@ -2,82 +2,19 @@ import retro
 import os
 import time
 import numpy as np
+from DeepQAgent import DeepQAgent
 
 
-def read_ram_values(env, info):
-    """Read game state from RAM"""
-    ram_info = {
-        "enemy_health": {"address": 16745154, "type": ">i2"},
-        "enemy_x_position": {"address": 16745094, "type": ">u2"},
-        "enemy_y_position": {"address": 16745098, "type": ">u2"},
-        "health": {"address": 16744514, "type": ">i2"},
-        "x_position": {"address": 16744454, "type": ">u2"},
-        "y_position": {"address": 16744458, "type": ">u2"},
-        "status": {"address": 16744450, "type": ">u2"},
-    }
-
-    try:
-        if hasattr(env.unwrapped, "get_ram"):
-            ram = env.unwrapped.get_ram()
-        elif hasattr(env.unwrapped, "em") and hasattr(env.unwrapped.em, "get_ram"):
-            ram = env.unwrapped.em.get_ram()
-        else:
-            return info
-
-        for key, address_info in ram_info.items():
-            addr = address_info["address"]
-            data_type = address_info["type"]
-            if addr >= len(ram):
-                continue
-            try:
-                if data_type == ">u2":
-                    if addr + 1 < len(ram):
-                        value = (ram[addr] << 8) | ram[addr + 1]
-                    else:
-                        continue
-                elif data_type == ">i2":
-                    if addr + 1 < len(ram):
-                        value = (ram[addr] << 8) | ram[addr + 1]
-                        if value >= 32768:
-                            value -= 65536
-                    else:
-                        continue
-                else:
-                    value = ram[addr]
-                info[key] = value
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    # Set defaults if not found
-    defaults = {
-        "enemy_health": 176,
-        "enemy_x_position": 200,
-        "enemy_y_position": 0,
-        "health": 176,
-        "x_position": 100,
-        "y_position": 0,
-        "status": 512,
-    }
-    for key, default_value in defaults.items():
-        if key not in info:
-            info[key] = default_value
-
-    return info
-
-
-def test_movement():
-    """Test basic movement commands"""
-    print("🧪 MOVEMENT DIAGNOSTIC TEST")
+def test_raw_movement():
+    """Test if movement works AT ALL in the game"""
+    print("🧪 TESTING RAW MOVEMENT IN GAME")
     print("=" * 50)
 
-    # Create environment
     game = "StreetFighterIISpecialChampionEdition-Genesis"
     env = retro.make(game=game, players=1)
     env.reset()
 
-    # Load state if available
+    # Load state
     state_path = os.path.join(
         os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis"),
         "ken_bison_12.state",
@@ -86,188 +23,234 @@ def test_movement():
         with open(state_path, "rb") as f:
             state_data = f.read()
         env.em.set_state(state_data)
-        print("✅ Loaded state file")
-    else:
-        print("⚠️  No state file found, using default")
 
-    # Button mappings
-    # ["B", "A", "MODE", "START", "UP", "DOWN", "LEFT", "RIGHT", "C", "Y", "X", "Z"]
-    #  [0,   1,   2,     3,      4,    5,     6,      7,       8,   9,   10,  11]
+    print("👀 WATCH THE SCREEN - Does Ken move visually?")
+    print("If Ken doesn't move on screen, then movement is broken!")
 
-    test_inputs = {
-        "IDLE": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        "LEFT": [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
-        "RIGHT": [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
-        "UP": [0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
-        "DOWN": [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
-        "PUNCH": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],  # X button
-        "KICK": [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],  # C button
-    }
+    movements = [
+        ("RIGHT", [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]),
+        ("LEFT", [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]),
+        ("RIGHT", [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]),
+    ]
 
-    # Initialize and get starting position
-    print("\n📍 INITIALIZING...")
-    for _ in range(30):  # Let game settle
-        step_result = env.step(test_inputs["IDLE"])
-        if len(step_result) == 4:
-            obs, reward, done, info = step_result
-        else:
-            obs, reward, terminated, truncated, info = step_result
-            done = terminated or truncated
-        if hasattr(env, "render"):
+    # Initialize
+    NO_ACTION = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    for _ in range(60):
+        env.step(NO_ACTION)
+        env.render()
+        time.sleep(0.016)
+
+    print("Now testing movement...")
+
+    for name, action in movements:
+        print(f"\n🎮 Testing {name} - WATCH SCREEN!")
+
+        for frame in range(120):  # Hold for 2 seconds
+            env.step(action)
             env.render()
+            time.sleep(0.016)
 
-    info = read_ram_values(env, info)
-    start_x = info.get("x_position", 0)
-    start_y = info.get("y_position", 0)
-    start_health = info.get("health", 176)
+        # Rest between movements
+        for _ in range(60):
+            env.step(NO_ACTION)
+            env.render()
+            time.sleep(0.016)
 
-    print(f"🎮 STARTING POSITION:")
-    print(f"   Player: ({start_x}, {start_y})")
-    print(
-        f"   Enemy: ({info.get('enemy_x_position', 0)}, {info.get('enemy_y_position', 0)})"
-    )
-    print(f"   Health: {start_health}")
-    print(f"   Status: {info.get('status', 0)}")
-
-    # Test each input
-    for input_name, input_array in test_inputs.items():
-        if input_name == "IDLE":
-            continue
-
-        print(f"\n🧪 TESTING {input_name}: {input_array}")
-
-        # Record position before
-        before_info = read_ram_values(env, {})
-        before_x = before_info.get("x_position", start_x)
-        before_y = before_info.get("y_position", start_y)
-        before_health = before_info.get("health", start_health)
-
-        print(f"   Before: Pos=({before_x}, {before_y}), Health={before_health}")
-
-        # Execute input for multiple frames
-        for frame in range(60):  # Hold for 1 second (60 frames)
-            step_result = env.step(input_array)
-            if len(step_result) == 4:
-                obs, reward, done, info = step_result
-            else:
-                obs, reward, terminated, truncated, info = step_result
-                done = terminated or truncated
-
-            if hasattr(env, "render"):
-                env.render()
-            time.sleep(0.016)  # ~60 FPS
-
-            # Check every 15 frames
-            if frame % 15 == 0:
-                temp_info = read_ram_values(env, info)
-                temp_x = temp_info.get("x_position", before_x)
-                temp_y = temp_info.get("y_position", before_y)
-                temp_health = temp_info.get("health", before_health)
-
-                if (
-                    temp_x != before_x
-                    or temp_y != before_y
-                    or temp_health != before_health
-                ):
-                    print(
-                        f"   Frame {frame:2d}: Pos=({temp_x}, {temp_y}), Health={temp_health}"
-                    )
-
-        # Final position after input
-        after_info = read_ram_values(env, info)
-        after_x = after_info.get("x_position", before_x)
-        after_y = after_info.get("y_position", before_y)
-        after_health = after_info.get("health", before_health)
-
-        print(f"   After:  Pos=({after_x}, {after_y}), Health={after_health}")
-
-        # Check for changes
-        dx = after_x - before_x
-        dy = after_y - before_y
-        dh = after_health - before_health
-
-        if dx != 0 or dy != 0:
-            print(f"   ✅ POSITION CHANGED: Δx={dx}, Δy={dy}")
-        else:
-            print(f"   ❌ NO POSITION CHANGE")
-
-        if dh != 0:
-            print(f"   💥 HEALTH CHANGED: Δh={dh}")
-
-        # Rest between tests
-        print("   💤 Resting...")
-        for _ in range(30):
-            step_result = env.step(test_inputs["IDLE"])
-            if len(step_result) == 4:
-                obs, reward, done, info = step_result
-            else:
-                obs, reward, terminated, truncated, info = step_result
-                done = terminated or truncated
-            if hasattr(env, "render"):
-                env.render()
-
-    print(f"\n🏁 DIAGNOSTIC COMPLETE")
     env.close()
 
+    response = input(
+        "\n❓ Did you see Ken move LEFT and RIGHT on the screen? (y/n): "
+    ).lower()
+    return response == "y"
 
-def test_raw_ram_reading():
-    """Test if we can read RAM at all"""
-    print("\n🔍 RAW RAM DIAGNOSTIC")
-    print("=" * 30)
+
+def test_ram_reading_all_addresses():
+    """Test EVERY possible address to find real position"""
+    print("\n🔍 TESTING ALL RAM ADDRESSES FOR POSITION")
+    print("=" * 50)
 
     game = "StreetFighterIISpecialChampionEdition-Genesis"
     env = retro.make(game=game, players=1)
     env.reset()
 
-    # Test different ways to access RAM
-    print("Testing RAM access methods...")
+    state_path = os.path.join(
+        os.path.abspath("./StreetFighterIISpecialChampionEdition-Genesis"),
+        "ken_bison_12.state",
+    )
+    if os.path.exists(state_path):
+        with open(state_path, "rb") as f:
+            state_data = f.read()
+        env.em.set_state(state_data)
 
-    # Method 1: env.unwrapped.get_ram()
-    try:
-        if hasattr(env.unwrapped, "get_ram"):
-            ram = env.unwrapped.get_ram()
-            print(f"✅ Method 1 (env.unwrapped.get_ram): RAM size = {len(ram)}")
-            print(f"   Sample bytes: {ram[:10].tolist()}")
-        else:
-            print("❌ Method 1: No get_ram method")
-    except Exception as e:
-        print(f"❌ Method 1 error: {e}")
+    # Get initial RAM
+    NO_ACTION = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    for _ in range(60):
+        env.step(NO_ACTION)
 
-    # Method 2: env.unwrapped.em.get_ram()
-    try:
-        if hasattr(env.unwrapped, "em") and hasattr(env.unwrapped.em, "get_ram"):
-            ram = env.unwrapped.em.get_ram()
-            print(f"✅ Method 2 (env.unwrapped.em.get_ram): RAM size = {len(ram)}")
-            print(f"   Sample bytes: {ram[:10].tolist()}")
-        else:
-            print("❌ Method 2: No em.get_ram method")
-    except Exception as e:
-        print(f"❌ Method 2 error: {e}")
+    ram_before = env.unwrapped.get_ram().copy()
+    print(f"📸 Captured initial RAM state")
 
-    # Method 3: Check what's available
-    print(f"\n🔍 Environment attributes:")
-    print(f"   env type: {type(env)}")
-    print(f"   env.unwrapped type: {type(env.unwrapped)}")
-    if hasattr(env.unwrapped, "em"):
-        print(f"   env.unwrapped.em type: {type(env.unwrapped.em)}")
-        em_attrs = [attr for attr in dir(env.unwrapped.em) if not attr.startswith("_")]
-        print(f"   em methods: {em_attrs[:10]}...")  # Show first 10
+    # Move RIGHT for long time
+    RIGHT = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]
+    print("➡️  Moving RIGHT for 3 seconds...")
+    for _ in range(180):  # 3 seconds
+        env.step(RIGHT)
+        env.render()
+        time.sleep(0.016)
+
+    ram_after = env.unwrapped.get_ram().copy()
+    print(f"📸 Captured post-movement RAM state")
+
+    # Find ALL addresses that changed
+    changes = []
+    for addr in range(len(ram_before)):
+        if ram_before[addr] != ram_after[addr]:
+            changes.append(
+                {
+                    "addr": addr,
+                    "before": ram_before[addr],
+                    "after": ram_after[addr],
+                    "diff": int(ram_after[addr]) - int(ram_before[addr]),
+                }
+            )
+
+    print(f"\n🔄 Found {len(changes)} changed addresses")
+
+    # Look for position-like changes
+    position_candidates = []
+    for change in changes:
+        addr = change["addr"]
+        before = change["before"]
+        after = change["after"]
+        diff = change["diff"]
+
+        # Look for reasonable position changes (1-50 pixel movement)
+        if 1 <= abs(diff) <= 50 and 0 <= before <= 400 and 0 <= after <= 400:
+            position_candidates.append(change)
+
+    print(f"🎯 Found {len(position_candidates)} position candidates:")
+    for i, candidate in enumerate(position_candidates[:20]):
+        addr = candidate["addr"]
+        before = candidate["before"]
+        after = candidate["after"]
+        diff = candidate["diff"]
+        print(
+            f"  {i+1:2d}. Address {addr:5d} (0x{addr:04X}): {before:3d}→{after:3d} (Δ{diff:+3d})"
+        )
 
     env.close()
+    return position_candidates
+
+
+def test_agent_training_data():
+    """Test what data the agent actually trained on"""
+    print("\n🧠 TESTING AGENT'S TRAINING DATA")
+    print("=" * 50)
+
+    # Test what the agent sees vs reality
+    agent = DeepQAgent(stateSize=60, total_timesteps=1000)
+
+    # Create fake game scenarios
+    scenarios = [
+        {"name": "Close", "px": 180, "py": 0, "ex": 200, "ey": 0},
+        {"name": "Far", "px": 100, "py": 0, "ex": 300, "ey": 0},
+        {"name": "Very Far", "px": 50, "py": 0, "ex": 350, "ey": 0},
+    ]
+
+    print("Testing agent's state processing:")
+    for scenario in scenarios:
+        info = {
+            "health": 176,
+            "enemy_health": 176,
+            "x_position": scenario["px"],
+            "y_position": scenario["py"],
+            "enemy_x_position": scenario["ex"],
+            "enemy_y_position": scenario["ey"],
+            "status": 512,
+            "enemy_status": 512,
+            "matches_won": 0,
+            "enemy_matches_won": 0,
+            "enemy_character": 0,
+            "score": 0,
+        }
+
+        distance = abs(scenario["ex"] - scenario["px"])
+        print(f"\n📍 {scenario['name']} scenario (distance={distance}):")
+
+        # Get agent's decision
+        stateData = agent.prepareNetworkInputs(info)
+        predictedRewards = agent.model.predict(stateData, verbose=0)[0]
+
+        # Check movement vs attack preferences
+        right_q = predictedRewards[1]  # Right
+        left_q = predictedRewards[5]  # Left
+        punch_q = predictedRewards[11]  # HeavyPunch
+        fireball_q = predictedRewards[25]  # Fireball
+
+        print(f"   Right Q-value: {right_q:.3f}")
+        print(f"   Left Q-value: {left_q:.3f}")
+        print(f"   HeavyPunch Q-value: {punch_q:.3f}")
+        print(f"   Fireball Q-value: {fireball_q:.3f}")
+
+        max_movement = max(right_q, left_q)
+        max_attack = max(punch_q, fireball_q)
+
+        if max_attack > max_movement:
+            print(
+                f"   ❌ Prefers ATTACK ({max_attack:.3f}) over MOVEMENT ({max_movement:.3f})"
+            )
+        else:
+            print(
+                f"   ✅ Prefers MOVEMENT ({max_movement:.3f}) over ATTACK ({max_attack:.3f})"
+            )
+
+
+def main():
+    print("🚨 COMPREHENSIVE MOVEMENT DEBUG")
+    print("This will test EVERYTHING to find why the agent won't move!")
+
+    print("\n1️⃣ First, let's test if movement works in the game at all...")
+    input("Press Enter to start visual movement test...")
+
+    movement_works = test_raw_movement()
+
+    if not movement_works:
+        print("\n❌ MOVEMENT DOESN'T WORK IN THE GAME!")
+        print("The problem is with the game/emulator, not the agent!")
+        print("Check:")
+        print("- Is the right ROM loaded?")
+        print("- Are controls mapped correctly?")
+        print("- Is the game state correct?")
+        return
+
+    print("\n✅ Movement works visually!")
+    print("\n2️⃣ Now let's find the correct RAM addresses...")
+    input("Press Enter to scan RAM addresses...")
+
+    candidates = test_ram_reading_all_addresses()
+
+    if not candidates:
+        print("\n❌ NO POSITION ADDRESSES FOUND!")
+        print("The RAM reading is completely broken!")
+        return
+
+    print(f"\n✅ Found {len(candidates)} position candidates!")
+    print("\n3️⃣ Finally, let's test what the agent learned...")
+    input("Press Enter to analyze agent behavior...")
+
+    test_agent_training_data()
+
+    print("\n🎯 DIAGNOSIS:")
+    if movement_works and candidates:
+        print("✅ Game movement works")
+        print("✅ RAM addresses found")
+        print("❌ Agent learned wrong strategy")
+        print("\n💡 SOLUTION: Train longer with movement rewards!")
+        print("The agent needs to learn that movement → better rewards")
+    else:
+        print("❌ Fundamental issues found")
+        print("Need to fix game/RAM issues first")
 
 
 if __name__ == "__main__":
-    print("🚀 STREET FIGHTER MOVEMENT DIAGNOSTIC")
-    print("This will test if movement inputs work at all")
-    print("Watch the screen - the character should move!")
-    print("\nPress Enter to start...")
-    input()
-
-    # First test raw RAM access
-    test_raw_ram_reading()
-
-    print("\nPress Enter to start movement test...")
-    input()
-
-    # Then test movement
-    test_movement()
+    main()
