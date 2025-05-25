@@ -195,7 +195,7 @@ def main():
     print("=" * 50)
 
     # Load agent
-    model_path = "models/DeepQAgentModel_400000.weights.h5"
+    model_path = "models/DeepQAgentModel_200000.weights.h5"
     if not os.path.exists(model_path):
         print(f"❌ Model not found: {model_path}")
         return

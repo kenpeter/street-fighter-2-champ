@@ -291,22 +291,34 @@ class DeepQAgent:
         return frameInputs
 
     def getMove(self, obs, info):
-        """Returns button inputs with epsilon-greedy action selection + loop prevention"""
+        """Returns button inputs with AGGRESSIVE epsilon-greedy action selection"""
         self.step_counter += 1
 
-        # MINIMAL FIX: Force variety every 100 steps
+        # Force variety every 100 steps
         if self.step_counter % self.force_variety_interval == 0:
-            move_index, frameInputs = self.getRandomMove(info)
+            # Bias towards offensive moves when forcing variety
+            offensive_moves = [4, 5, 6, 7, 8, 9, 10, 11]
+            if random.random() < 0.7:  # 70% chance to pick offensive move
+                move_index = random.choice(offensive_moves)
+                move = list(self.moveList)[move_index]
+                frameInputs = self.convertMoveToFrameInputs(move, info)
+            else:
+                move_index, frameInputs = self.getRandomMove(info)
+
             self.action_memory.append(move_index)
             if len(self.action_memory) > self.action_memory_size:
                 self.action_memory.pop(0)
             return move_index, frameInputs
 
-        # MINIMAL FIX: Check for loops (same action repeated)
+        # Check for loops
         if len(self.action_memory) >= 3 and len(set(self.action_memory[-3:])) == 1:
             self.loop_counter += 1
-            if self.loop_counter >= 3:  # Break loop after 3 repetitions
-                move_index, frameInputs = self.getRandomMove(info)
+            if self.loop_counter >= 3:
+                # When breaking loops, prefer offensive moves
+                offensive_moves = [4, 5, 6, 7, 8, 9, 10, 11]
+                move_index = random.choice(offensive_moves)
+                move = list(self.moveList)[move_index]
+                frameInputs = self.convertMoveToFrameInputs(move, info)
                 self.loop_counter = 0
                 self.action_memory.append(move_index)
                 if len(self.action_memory) > self.action_memory_size:
@@ -315,15 +327,28 @@ class DeepQAgent:
 
         # Regular epsilon-greedy selection
         if random.random() < self.epsilon:
-            move_index, frameInputs = self.getRandomMove(info)
+            # AGGRESSIVE: Bias random selection towards attacks
+            if random.random() < 0.6:  # 60% of random moves are attacks
+                offensive_moves = [4, 5, 6, 7, 8, 9, 10, 11]
+                move_index = random.choice(offensive_moves)
+                move = list(self.moveList)[move_index]
+                frameInputs = self.convertMoveToFrameInputs(move, info)
+            else:
+                move_index, frameInputs = self.getRandomMove(info)
         else:
             stateData = self.prepareNetworkInputs(info)
             predictedRewards = self.model.predict(stateData, verbose=0)[0]
 
-            # MINIMAL FIX: Penalize recently used actions
+            # Penalize recently used actions (same as before)
             for recent_action in self.action_memory:
                 if recent_action < len(predictedRewards):
-                    predictedRewards[recent_action] *= 0.5  # Reduce preference
+                    predictedRewards[recent_action] *= 0.5
+
+            # AGGRESSIVE: Boost offensive move preferences
+            offensive_moves = [4, 5, 6, 7, 8, 9, 10, 11]
+            for move_idx in offensive_moves:
+                if move_idx < len(predictedRewards):
+                    predictedRewards[move_idx] *= 1.2  # 20% boost to attacks
 
             move_index = np.argmax(predictedRewards)
             move = list(self.moveList)[move_index]
@@ -349,9 +374,11 @@ class DeepQAgent:
         prev_opponent_health,
         curr_player_health,
         curr_opponent_health,
+        action_index=None,
+        time_step=0,
     ):
         """
-        EXACT COPY of the 95% win rate reward calculation
+        AGGRESSIVE reward calculation - rewards attacking over defending
         """
         # Game is over and player loses.
         if curr_player_health < 0:
@@ -362,26 +389,57 @@ class DeepQAgent:
 
         # Game is over and player wins.
         elif curr_opponent_health < 0:
+            # BONUS: Faster wins get higher rewards
+            time_bonus = max(0, 800 - time_step) * 0.1
             custom_reward = (
                 math.pow(self.full_hp, (curr_player_health + 1) / (self.full_hp + 1))
                 * self.reward_coeff
-            )
+            ) + time_bonus
             custom_done = True
 
         # While the fighting is still going on
         else:
-            custom_reward = self.reward_coeff * (
+            # Base damage reward (same as before)
+            damage_reward = self.reward_coeff * (
                 prev_opponent_health - curr_opponent_health
             ) - (prev_player_health - curr_player_health)
+
+            # AGGRESSIVE BONUSES:
+            attack_bonus = 0
+            if action_index is not None:
+                # Reward offensive moves
+                offensive_moves = [4, 5, 6, 7, 8, 9, 10, 11]  # All punch/kick moves
+                defensive_moves = [0, 1, 2, 3]  # Idle, movement, down
+
+                if action_index in offensive_moves:
+                    # Big bonus for attacking
+                    attack_bonus = 0.5
+
+                    # Extra bonus for dealing damage while attacking
+                    if (prev_opponent_health - curr_opponent_health) > 0:
+                        attack_bonus = 2.0  # HUGE reward for successful attacks
+
+                elif action_index in defensive_moves:
+                    # Small penalty for being passive
+                    attack_bonus = -0.1
+
+                    # Bigger penalty if just standing around
+                    if action_index == 0:  # Idle
+                        attack_bonus = -0.3
+
+            # Time pressure - encourage action
+            time_penalty = min(time_step * 0.0001, 0.1)  # Grows over time
+
+            custom_reward = damage_reward + attack_bonus - time_penalty
             custom_done = False
 
-        # CRITICAL: Apply the exact same reward normalization as the 95% version
+        # Apply the same normalization
         normalized_reward = 0.001 * custom_reward
 
         return normalized_reward, custom_done
 
     def recordStep(self, step):
-        """Record a step with the EXACT reward calculation from 95% win rate version"""
+        """Record a step with AGGRESSIVE reward calculation"""
         if isinstance(step, tuple):
             step = list(step)
 
@@ -394,22 +452,28 @@ class DeepQAgent:
         curr_player_health = curr_info.get("health", 176)
         curr_opponent_health = curr_info.get("enemy_health", 176)
 
-        # Use the EXACT same reward calculation as the 95% win rate version
+        # Get action and time info
+        action_index = step[self.ACTION_INDEX]
+        time_step = self.current_timesteps
+
+        # Use the AGGRESSIVE reward calculation
         normalized_reward, custom_done = self.calculate_exact_reward(
             prev_player_health,
             prev_opponent_health,
             curr_player_health,
             curr_opponent_health,
+            action_index,
+            time_step,
         )
 
-        # Replace the reward with the corrected calculation
+        # Replace the reward with the aggressive calculation
         step[self.REWARD_INDEX] = normalized_reward
 
         # Update done status if needed
         if custom_done:
             step[self.DONE_INDEX] = True
 
-        # Add to memory (no additional clipping - already normalized)
+        # Add to memory
         self.memory.append(step)
 
         # Keep memory size manageable
@@ -421,7 +485,7 @@ class DeepQAgent:
         # Update parameters based on progress
         self.update_parameters()
 
-        # FORCE MODEL SAVING DURING TRAINING
+        # Model saving logic (same as before)
         if self.current_timesteps - self.last_model_save >= self.save_model_interval:
             logger.info(f"💾 Auto-saving model at timestep {self.current_timesteps}")
             success = self.saveModel()
