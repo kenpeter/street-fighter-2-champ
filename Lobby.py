@@ -70,19 +70,25 @@ def make_env_worker(env_id, game, state_name, result_queue, command_queue):
                 state_data = f.read()
             env.em.set_state(state_data)
 
-        # RAM addresses for reading game state
+        # CORRECTED RAM addresses for reading game state (discovered through scanning)
         ram_info = {
             "continue_timer": {"address": 16744917, "type": "|u1"},
             "round_timer": {"address": 16750378, "type": ">u2"},
             "enemy_health": {"address": 16745154, "type": ">i2"},
-            "enemy_x_position": {"address": 16745094, "type": ">u2"},
-            "enemy_y_position": {"address": 16745098, "type": ">u2"},
+            "enemy_x_position": {
+                "address": 32984,
+                "type": "|u1",
+            },  # FIXED: Was 16745094
+            "enemy_y_position": {
+                "address": 32985,
+                "type": "|u1",
+            },  # FIXED: Was 16745098
             "enemy_matches_won": {"address": 16745559, "type": ">u4"},
             "enemy_status": {"address": 16745090, "type": ">u2"},
             "enemy_character": {"address": 16745563, "type": "|u1"},
             "health": {"address": 16744514, "type": ">i2"},
-            "x_position": {"address": 16744454, "type": ">u2"},
-            "y_position": {"address": 16744458, "type": ">u2"},
+            "x_position": {"address": 32774, "type": "|u1"},  # FIXED: Was 16744454
+            "y_position": {"address": 32775, "type": "|u1"},  # FIXED: Was 16744458
             "status": {"address": 16744450, "type": ">u2"},
             "matches_won": {"address": 16744922, "type": "|u1"},
             "score": {"address": 16744936, "type": ">d4"},
